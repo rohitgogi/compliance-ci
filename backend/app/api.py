@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.ci import determine_pr_gate, render_pr_comment
 from app.evaluator import evaluate_feature_spec
+from app.llm_adapter import LLMEvaluationRequest, evaluate_with_openai
 from app.parser import SpecValidationError, parse_feature_spec_yaml
 
 app = FastAPI(title="Compliance CI Backend", version="0.1.0")
@@ -54,6 +57,7 @@ class FeatureEvaluationResponse(BaseModel):
     risk_score: int | None = None
     evidence_chunk_ids: list[str] = []
     reasoning_summary: str | None = None
+    llm_observation: dict | None = None
     error: str | None = None
     validation_details: list[dict] = []
 
@@ -66,6 +70,7 @@ class EvaluatePRResponse(BaseModel):
     commit_sha: str
     final_gate: str
     comment_markdown: str
+    llm_adapter_enabled: bool = False
     results: list[FeatureEvaluationResponse]
 
 
@@ -84,10 +89,29 @@ def evaluate_pr(payload: EvaluatePRRequest) -> EvaluatePRResponse:
     evaluation of other changed specs.
     """
     results: list[FeatureEvaluationResponse] = []
+    llm_enabled = os.environ.get("COMPLIANCE_LLM_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
     for changed_spec in payload.specs:
         try:
             parsed = parse_feature_spec_yaml(changed_spec.spec_yaml)
             evaluation = evaluate_feature_spec(parsed)
+            llm_observation: dict | None = None
+            if llm_enabled:
+                # Milestone-1: observational only. Final gate remains deterministic.
+                llm_result = evaluate_with_openai(
+                    LLMEvaluationRequest(
+                        feature=parsed,
+                        evidence_chunks=[],
+                        correlation_id=f"pr-{payload.pr_number}:{parsed.feature_id}",
+                    )
+                )
+                llm_observation = {
+                    "decision": llm_result.decision,
+                    "confidence": llm_result.confidence,
+                    "summary": llm_result.summary,
+                    "fallback": llm_result.fallback,
+                    "error_type": llm_result.error_type,
+                    "attempts": llm_result.attempts,
+                }
             results.append(
                 FeatureEvaluationResponse(
                     path=changed_spec.path,
@@ -96,6 +120,7 @@ def evaluate_pr(payload: EvaluatePRRequest) -> EvaluatePRResponse:
                     risk_score=evaluation.risk_score,
                     evidence_chunk_ids=evaluation.evidence_chunk_ids,
                     reasoning_summary=evaluation.reasoning_summary,
+                    llm_observation=llm_observation,
                 )
             )
         except SpecValidationError as exc:
@@ -116,5 +141,6 @@ def evaluate_pr(payload: EvaluatePRRequest) -> EvaluatePRResponse:
         commit_sha=payload.commit_sha,
         final_gate=final_gate,
         comment_markdown=comment_markdown,
+        llm_adapter_enabled=llm_enabled,
         results=results,
     )

@@ -99,3 +99,86 @@ change_summary: Missing required field.
     assert valid_result["error"] is None
     assert invalid_result["error"] == "Spec schema validation failed"
     assert invalid_result["validation_details"]
+
+
+def test_llm_adapter_flag_off_keeps_observation_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("COMPLIANCE_LLM_ENABLED", raising=False)
+    payload = {
+        "repo": "acme/compliance-ci",
+        "pr_number": 46,
+        "commit_sha": "abcdef7654321",
+        "specs": [
+            {"path": "backend/features/payments/card_capture.yaml", "spec_yaml": VALID_SPEC},
+        ],
+    }
+    response = client.post("/v1/evaluate-pr", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["llm_adapter_enabled"] is False
+    assert body["results"][0]["llm_observation"] is None
+
+
+def test_llm_adapter_flag_on_is_observational_only(monkeypatch) -> None:
+    monkeypatch.setenv("COMPLIANCE_LLM_ENABLED", "true")
+
+    class FakeLLM:
+        def __init__(self, decision: str, confidence: float) -> None:
+            self.decision = decision
+            self.confidence = confidence
+            self.summary = "LLM summary"
+            self.fallback = False
+            self.error_type = None
+            self.attempts = 1
+
+    def fake_evaluate_with_openai(request):
+        # Deliberately return FAIL to verify milestone-1 gate safety.
+        return FakeLLM(decision="FAIL", confidence=0.99)
+
+    monkeypatch.setattr("app.api.evaluate_with_openai", fake_evaluate_with_openai)
+    payload = {
+        "repo": "acme/compliance-ci",
+        "pr_number": 47,
+        "commit_sha": "abcdef7654321",
+        "specs": [
+            {"path": "backend/features/payments/card_capture.yaml", "spec_yaml": VALID_SPEC},
+        ],
+    }
+    response = client.post("/v1/evaluate-pr", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["llm_adapter_enabled"] is True
+    assert body["results"][0]["llm_observation"]["decision"] == "FAIL"
+    # Milestone-1 safety: final gate should remain deterministic-only behavior.
+    assert body["final_gate"] == body["results"][0]["decision"]
+
+
+def test_llm_flag_toggle_does_not_change_deterministic_gate(monkeypatch) -> None:
+    payload = {
+        "repo": "acme/compliance-ci",
+        "pr_number": 48,
+        "commit_sha": "abcdef7654321",
+        "specs": [
+            {"path": "backend/features/payments/card_capture.yaml", "spec_yaml": VALID_SPEC},
+        ],
+    }
+
+    monkeypatch.delenv("COMPLIANCE_LLM_ENABLED", raising=False)
+    off_response = client.post("/v1/evaluate-pr", json=payload)
+    off_gate = off_response.json()["final_gate"]
+
+    monkeypatch.setenv("COMPLIANCE_LLM_ENABLED", "true")
+
+    class FakeLLM:
+        def __init__(self) -> None:
+            self.decision = "REVIEW_REQUIRED"
+            self.confidence = 0.2
+            self.summary = "llm says review"
+            self.fallback = False
+            self.error_type = None
+            self.attempts = 1
+
+    monkeypatch.setattr("app.api.evaluate_with_openai", lambda request: FakeLLM())
+    on_response = client.post("/v1/evaluate-pr", json=payload)
+    on_body = on_response.json()
+    assert on_body["final_gate"] == off_gate
+    assert on_body["results"][0]["llm_observation"] is not None
