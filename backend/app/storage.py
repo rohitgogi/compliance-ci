@@ -85,6 +85,9 @@ class ComplianceStore:
                     target_corpus_version TEXT NOT NULL,
                     scope TEXT NOT NULL,
                     status TEXT NOT NULL,
+                    success_count INTEGER NOT NULL DEFAULT 0,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    error_summary TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -98,6 +101,7 @@ class ComplianceStore:
                     regressed INTEGER NOT NULL,
                     details TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    UNIQUE(job_id, feature_id),
                     FOREIGN KEY (job_id) REFERENCES reevaluation_jobs(job_id)
                 );
                 """
@@ -276,6 +280,26 @@ class ComplianceStore:
                 (version_id, source_set, now),
             )
 
+    def get_corpus_version(self, version_id: str) -> dict[str, Any] | None:
+        """Return corpus version metadata by ID."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT version_id, source_set, released_at
+                FROM corpus_versions
+                WHERE version_id = ?
+                LIMIT 1
+                """,
+                (version_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "version_id": row["version_id"],
+                "source_set": row["source_set"],
+                "released_at": row["released_at"],
+            }
+
     def create_reevaluation_job(
         self,
         *,
@@ -298,6 +322,75 @@ class ComplianceStore:
             )
             return cursor.rowcount == 1
 
+    def get_reevaluation_job(self, job_id: str) -> dict[str, Any] | None:
+        """Return reevaluation job metadata by ID."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT job_id, target_corpus_version, scope, status,
+                       success_count, failure_count, error_summary, created_at, updated_at
+                FROM reevaluation_jobs
+                WHERE job_id = ?
+                LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "job_id": row["job_id"],
+                "target_corpus_version": row["target_corpus_version"],
+                "scope": json.loads(row["scope"]),
+                "status": row["status"],
+                "success_count": int(row["success_count"]),
+                "failure_count": int(row["failure_count"]),
+                "error_summary": row["error_summary"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+
+    def update_reevaluation_job_status(
+        self,
+        *,
+        job_id: str,
+        status: str,
+        success_count: int | None = None,
+        failure_count: int | None = None,
+        error_summary: str | None = None,
+    ) -> None:
+        """Update reevaluation job status and aggregate counters."""
+        with self._connect() as conn:
+            current = conn.execute(
+                """
+                SELECT success_count, failure_count, error_summary
+                FROM reevaluation_jobs
+                WHERE job_id = ?
+                LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone()
+            if current is None:
+                raise ValueError(f"Unknown reevaluation job: {job_id}")
+            conn.execute(
+                """
+                UPDATE reevaluation_jobs
+                SET status = ?,
+                    success_count = ?,
+                    failure_count = ?,
+                    error_summary = ?,
+                    updated_at = ?
+                WHERE job_id = ?
+                """,
+                (
+                    status,
+                    int(success_count if success_count is not None else current["success_count"]),
+                    int(failure_count if failure_count is not None else current["failure_count"]),
+                    error_summary if error_summary is not None else current["error_summary"],
+                    utc_now_iso(),
+                    job_id,
+                ),
+            )
+
     def list_active_feature_ids(self) -> list[str]:
         """List all active feature IDs to target reevaluation runs."""
         with self._connect() as conn:
@@ -311,6 +404,55 @@ class ComplianceStore:
             ).fetchall()
             return [str(row["feature_id"]) for row in rows]
 
+    def get_reevaluation_result(self, job_id: str, feature_id: str) -> dict[str, Any] | None:
+        """Return a previously stored reevaluation result for resume support."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT job_id, feature_id, previous_decision, new_decision, regressed, details, created_at
+                FROM reevaluation_results
+                WHERE job_id = ? AND feature_id = ?
+                LIMIT 1
+                """,
+                (job_id, feature_id),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "job_id": row["job_id"],
+                "feature_id": row["feature_id"],
+                "previous_decision": row["previous_decision"],
+                "new_decision": row["new_decision"],
+                "regressed": bool(row["regressed"]),
+                "details": json.loads(row["details"]),
+                "created_at": row["created_at"],
+            }
+
+    def list_reevaluation_results(self, job_id: str) -> list[dict[str, Any]]:
+        """List reevaluation results for a job in deterministic order."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT job_id, feature_id, previous_decision, new_decision, regressed, details, created_at
+                FROM reevaluation_results
+                WHERE job_id = ?
+                ORDER BY feature_id
+                """,
+                (job_id,),
+            ).fetchall()
+            return [
+                {
+                    "job_id": row["job_id"],
+                    "feature_id": row["feature_id"],
+                    "previous_decision": row["previous_decision"],
+                    "new_decision": row["new_decision"],
+                    "regressed": bool(row["regressed"]),
+                    "details": json.loads(row["details"]),
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ]
+
     def record_regression(
         self,
         *,
@@ -321,7 +463,7 @@ class ComplianceStore:
         regressed: bool,
         details: dict[str, Any],
     ) -> None:
-        """Persist reevaluation comparison result."""
+        """Persist reevaluation comparison result idempotently per (job, feature)."""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -329,6 +471,12 @@ class ComplianceStore:
                     job_id, feature_id, previous_decision, new_decision, regressed, details, created_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id, feature_id)
+                DO UPDATE SET
+                    previous_decision = excluded.previous_decision,
+                    new_decision = excluded.new_decision,
+                    regressed = excluded.regressed,
+                    details = excluded.details
                 """,
                 (
                     job_id,
