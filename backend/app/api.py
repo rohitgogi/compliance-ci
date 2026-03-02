@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+from functools import lru_cache
+from pathlib import Path
 
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -12,8 +15,15 @@ from app.evaluator import evaluate_feature_spec, retrieve_relevant_chunks
 from app.fusion import FusionInput, fuse_decision
 from app.llm_adapter import LLMEvaluationRequest, evaluate_with_openai
 from app.parser import SpecValidationError, parse_feature_spec_yaml
+from app.storage import ComplianceStore, EvaluationRecord
 
 app = FastAPI(title="Compliance CI Backend", version="0.1.0")
+
+
+@lru_cache(maxsize=1)
+def _get_store() -> ComplianceStore:
+    db_path = Path(os.environ.get("COMPLIANCE_DB_PATH", "data/compliance.db"))
+    return ComplianceStore(db_path)
 
 
 class ChangedSpecInput(BaseModel):
@@ -93,6 +103,7 @@ def evaluate_pr(payload: EvaluatePRRequest) -> EvaluatePRResponse:
     """
     results: list[FeatureEvaluationResponse] = []
     llm_enabled = os.environ.get("COMPLIANCE_LLM_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
+    store = _get_store()
     for changed_spec in payload.specs:
         try:
             parsed = parse_feature_spec_yaml(changed_spec.spec_yaml)
@@ -137,6 +148,41 @@ def evaluate_pr(payload: EvaluatePRRequest) -> EvaluatePRResponse:
                     "explanation": fusion_result.explanation,
                     "remediation_hints": fusion_result.remediation_hints,
                 }
+
+            spec_hash = hashlib.sha256(changed_spec.spec_yaml.encode("utf-8")).hexdigest()
+            spec_version = payload.commit_sha[:12]
+            parsed_payload = parsed.model_dump(mode="python")
+            store.upsert_feature_spec(
+                feature_id=parsed.feature_id,
+                spec_version=spec_version,
+                content_hash=spec_hash,
+                path=changed_spec.path,
+                parsed_payload=parsed_payload,
+                active=True,
+            )
+            store.record_evaluation(
+                EvaluationRecord(
+                    feature_id=parsed.feature_id,
+                    spec_version=spec_version,
+                    corpus_version=evaluation.corpus_version,
+                    risk_score=evaluation.risk_score,
+                    decision=final_decision,
+                    evidence_chunk_ids=evaluation.evidence_chunk_ids,
+                    reasoning_summary=evaluation.reasoning_summary,
+                    commit_sha=payload.commit_sha,
+                    deterministic_confidence=deterministic_confidence,
+                    llm_decision=llm_observation.get("decision") if llm_observation else None,
+                    llm_confidence=llm_observation.get("confidence") if llm_observation else None,
+                    llm_fallback=llm_observation.get("fallback") if llm_observation else None,
+                    llm_error_type=llm_observation.get("error_type") if llm_observation else None,
+                    llm_model=os.environ.get("OPENAI_MODEL", "gpt-4.1-mini") if llm_observation else None,
+                    llm_attempts=llm_observation.get("attempts") if llm_observation else None,
+                    fused_confidence=fusion_observation.get("fused_confidence") if fusion_observation else None,
+                    fused_reason_codes=fusion_observation.get("reason_codes") if fusion_observation else None,
+                    fused_explanation=fusion_observation.get("explanation") if fusion_observation else None,
+                    remediation_hints=fusion_observation.get("remediation_hints") if fusion_observation else None,
+                )
+            )
             results.append(
                 FeatureEvaluationResponse(
                     path=changed_spec.path,

@@ -27,6 +27,17 @@ class EvaluationRecord:
     evidence_chunk_ids: list[str]
     reasoning_summary: str
     commit_sha: str
+    deterministic_confidence: float | None = None
+    llm_decision: str | None = None
+    llm_confidence: float | None = None
+    llm_fallback: bool | None = None
+    llm_error_type: str | None = None
+    llm_model: str | None = None
+    llm_attempts: int | None = None
+    fused_confidence: float | None = None
+    fused_reason_codes: list[str] | None = None
+    fused_explanation: str | None = None
+    remediation_hints: list[str] | None = None
 
 
 class ComplianceStore:
@@ -69,6 +80,17 @@ class ComplianceStore:
                     reasoning_summary TEXT NOT NULL,
                     commit_sha TEXT NOT NULL,
                     evaluated_at TEXT NOT NULL,
+                    deterministic_confidence REAL,
+                    llm_decision TEXT,
+                    llm_confidence REAL,
+                    llm_fallback INTEGER,
+                    llm_error_type TEXT,
+                    llm_model TEXT,
+                    llm_attempts INTEGER,
+                    fused_confidence REAL,
+                    fused_reason_codes TEXT,
+                    fused_explanation TEXT,
+                    remediation_hints TEXT,
                     UNIQUE(feature_id, spec_version, corpus_version, commit_sha),
                     FOREIGN KEY (feature_id, spec_version)
                         REFERENCES feature_specs(feature_id, spec_version)
@@ -106,6 +128,24 @@ class ComplianceStore:
                 );
                 """
             )
+            self._ensure_column(conn, "evaluations", "deterministic_confidence", "REAL")
+            self._ensure_column(conn, "evaluations", "llm_decision", "TEXT")
+            self._ensure_column(conn, "evaluations", "llm_confidence", "REAL")
+            self._ensure_column(conn, "evaluations", "llm_fallback", "INTEGER")
+            self._ensure_column(conn, "evaluations", "llm_error_type", "TEXT")
+            self._ensure_column(conn, "evaluations", "llm_model", "TEXT")
+            self._ensure_column(conn, "evaluations", "llm_attempts", "INTEGER")
+            self._ensure_column(conn, "evaluations", "fused_confidence", "REAL")
+            self._ensure_column(conn, "evaluations", "fused_reason_codes", "TEXT")
+            self._ensure_column(conn, "evaluations", "fused_explanation", "TEXT")
+            self._ensure_column(conn, "evaluations", "remediation_hints", "TEXT")
+
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        """Migration-safe helper to add columns when running on older DBs."""
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        existing_columns = {row["name"] for row in rows}
+        if column not in existing_columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def upsert_feature_spec(
         self,
@@ -206,9 +246,12 @@ class ComplianceStore:
                 """
                 INSERT OR IGNORE INTO evaluations (
                     feature_id, spec_version, corpus_version, risk_score, decision,
-                    evidence_chunk_ids, reasoning_summary, commit_sha, evaluated_at
+                    evidence_chunk_ids, reasoning_summary, commit_sha, evaluated_at,
+                    deterministic_confidence, llm_decision, llm_confidence, llm_fallback,
+                    llm_error_type, llm_model, llm_attempts, fused_confidence,
+                    fused_reason_codes, fused_explanation, remediation_hints
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.feature_id,
@@ -220,6 +263,17 @@ class ComplianceStore:
                     record.reasoning_summary,
                     record.commit_sha,
                     utc_now_iso(),
+                    record.deterministic_confidence,
+                    record.llm_decision,
+                    record.llm_confidence,
+                    1 if record.llm_fallback else 0 if record.llm_fallback is not None else None,
+                    record.llm_error_type,
+                    record.llm_model,
+                    record.llm_attempts,
+                    record.fused_confidence,
+                    json.dumps(record.fused_reason_codes or [], sort_keys=True),
+                    record.fused_explanation,
+                    json.dumps(record.remediation_hints or [], sort_keys=True),
                 ),
             )
 
@@ -244,7 +298,10 @@ class ComplianceStore:
             rows = conn.execute(
                 """
                 SELECT spec_version, corpus_version, risk_score, decision, evidence_chunk_ids,
-                       reasoning_summary, commit_sha, evaluated_at
+                       reasoning_summary, commit_sha, evaluated_at, deterministic_confidence,
+                       llm_decision, llm_confidence, llm_fallback, llm_error_type, llm_model,
+                       llm_attempts, fused_confidence, fused_reason_codes, fused_explanation,
+                       remediation_hints
                 FROM evaluations
                 WHERE feature_id = ?
                 ORDER BY evaluated_at DESC, id DESC
@@ -261,9 +318,52 @@ class ComplianceStore:
                     "reasoning_summary": row["reasoning_summary"],
                     "commit_sha": row["commit_sha"],
                     "evaluated_at": row["evaluated_at"],
+                    "deterministic_confidence": row["deterministic_confidence"],
+                    "llm_decision": row["llm_decision"],
+                    "llm_confidence": row["llm_confidence"],
+                    "llm_fallback": bool(row["llm_fallback"]) if row["llm_fallback"] is not None else None,
+                    "llm_error_type": row["llm_error_type"],
+                    "llm_model": row["llm_model"],
+                    "llm_attempts": row["llm_attempts"],
+                    "fused_confidence": row["fused_confidence"],
+                    "fused_reason_codes": json.loads(row["fused_reason_codes"] or "[]"),
+                    "fused_explanation": row["fused_explanation"],
+                    "remediation_hints": json.loads(row["remediation_hints"] or "[]"),
                 }
                 for row in rows
             ]
+
+    def get_latest_evaluation(self, feature_id: str) -> dict[str, Any] | None:
+        """Return latest evaluation record for a feature."""
+        evaluations = self.get_evaluations(feature_id)
+        return evaluations[0] if evaluations else None
+
+    def list_evaluations_by_reason_code(self, reason_code: str) -> list[dict[str, Any]]:
+        """Return evaluations that include a given fused reason code."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT feature_id, spec_version, corpus_version, decision, fused_reason_codes, evaluated_at
+                FROM evaluations
+                WHERE fused_reason_codes IS NOT NULL
+                ORDER BY evaluated_at DESC, id DESC
+                """
+            ).fetchall()
+            matched: list[dict[str, Any]] = []
+            for row in rows:
+                reason_codes = json.loads(row["fused_reason_codes"] or "[]")
+                if reason_code in reason_codes:
+                    matched.append(
+                        {
+                            "feature_id": row["feature_id"],
+                            "spec_version": row["spec_version"],
+                            "corpus_version": row["corpus_version"],
+                            "decision": row["decision"],
+                            "fused_reason_codes": reason_codes,
+                            "evaluated_at": row["evaluated_at"],
+                        }
+                    )
+            return matched
 
     def register_corpus_version(self, version_id: str, source_set: str) -> None:
         """Store corpus release metadata with idempotent upsert semantics."""

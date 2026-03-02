@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from app.api import app
+from app.storage import ComplianceStore
 
 client = TestClient(app)
 
@@ -245,3 +248,43 @@ def test_llm_fallback_forces_conservative_review(monkeypatch) -> None:
     body = response.json()
     assert body["final_gate"] == "REVIEW_REQUIRED"
     assert "LLM_FALLBACK_CONSERVATIVE" in body["results"][0]["fusion_observation"]["reason_codes"]
+
+
+def test_api_persists_hybrid_evaluation_fields(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "compliance.db"
+    monkeypatch.setenv("COMPLIANCE_DB_PATH", str(db_path))
+    monkeypatch.setenv("COMPLIANCE_LLM_ENABLED", "true")
+
+    class FakeLLM:
+        def __init__(self) -> None:
+            self.decision = "PASS"
+            self.confidence = 0.9
+            self.summary = "good"
+            self.fallback = False
+            self.error_type = None
+            self.attempts = 1
+            self.findings = []
+            self.remediation_hints = []
+
+    monkeypatch.setattr("app.api.evaluate_with_openai", lambda request: FakeLLM())
+    # Ensure cache picks up test DB path.
+    from app.api import _get_store
+
+    _get_store.cache_clear()
+    payload = {
+        "repo": "acme/compliance-ci",
+        "pr_number": 51,
+        "commit_sha": "abcdef7654321",
+        "specs": [
+            {"path": "backend/features/payments/card_capture.yaml", "spec_yaml": VALID_SPEC},
+        ],
+    }
+    response = client.post("/v1/evaluate-pr", json=payload)
+    assert response.status_code == 200
+
+    store = ComplianceStore(db_path)
+    latest = store.get_latest_evaluation("payments_card_capture")
+    assert latest is not None
+    assert latest["llm_decision"] == "PASS"
+    assert latest["deterministic_confidence"] is not None
+    assert latest["fused_reason_codes"]

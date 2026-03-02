@@ -9,6 +9,7 @@ import pytest
 from app.reevaluation import (
     build_regression_report,
     execute_reevaluation_job,
+    is_confidence_regression,
     is_regression,
     trigger_corpus_update,
 )
@@ -315,3 +316,48 @@ def test_e2e_idempotent_retrigger_does_not_duplicate_jobs_or_results(tmp_path: P
 )
 def test_regression_transition_matrix(previous_decision: str, new_decision: str, expected: bool) -> None:
     assert is_regression(previous_decision, new_decision) is expected
+
+
+def test_confidence_regression_threshold_crossing() -> None:
+    assert is_confidence_regression("PASS", "PASS", 0.8, 0.7) is True
+    assert is_confidence_regression("PASS", "PASS", 0.74, 0.7) is False
+    assert is_confidence_regression("REVIEW_REQUIRED", "REVIEW_REQUIRED", 0.9, 0.5) is False
+
+
+def test_execute_reevaluation_persists_hybrid_fields(tmp_path: Path) -> None:
+    store = ComplianceStore(tmp_path / "state.db")
+    _seed_feature_with_prior_decision(store, "feature_hybrid", "PASS")
+    plan = trigger_corpus_update(store, target_corpus_version="v10", source_set="core-v10")
+
+    def hybrid_eval(payload: dict, target_version: str) -> dict:
+        return {
+            "decision": "PASS",
+            "risk_score": 20,
+            "reasoning_summary": "ok",
+            "evidence_chunk_ids": ["REG-1"],
+            "deterministic_confidence": 0.8,
+            "llm_decision": "PASS",
+            "llm_confidence": 0.76,
+            "llm_fallback": False,
+            "llm_error_type": None,
+            "llm_model": "gpt-4.1-mini",
+            "llm_attempts": 1,
+            "fused_confidence": 0.776,
+            "fused_reason_codes": ["PASS_THRESHOLD_MET"],
+            "fused_explanation": "Both pass and threshold met.",
+            "remediation_hints": [],
+        }
+
+    summary = execute_reevaluation_job(
+        store,
+        job_id=plan.job_id,
+        target_corpus_version="v10",
+        reevaluate_feature=hybrid_eval,
+        commit_sha="sha-hybrid",
+    )
+    assert summary.status == "completed"
+    latest = store.get_latest_evaluation("feature_hybrid")
+    assert latest is not None
+    assert latest["llm_decision"] == "PASS"
+    assert latest["fused_confidence"] == pytest.approx(0.776)
+    assert latest["fused_reason_codes"] == ["PASS_THRESHOLD_MET"]
