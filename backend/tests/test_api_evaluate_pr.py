@@ -129,9 +129,11 @@ def test_llm_adapter_flag_on_is_observational_only(monkeypatch) -> None:
             self.fallback = False
             self.error_type = None
             self.attempts = 1
+            self.findings = []
+            self.remediation_hints = ["Add stricter controls"]
 
     def fake_evaluate_with_openai(request):
-        # Deliberately return FAIL to verify milestone-1 gate safety.
+        # Mixed signal should conservatively become REVIEW_REQUIRED.
         return FakeLLM(decision="FAIL", confidence=0.99)
 
     monkeypatch.setattr("app.api.evaluate_with_openai", fake_evaluate_with_openai)
@@ -148,8 +150,8 @@ def test_llm_adapter_flag_on_is_observational_only(monkeypatch) -> None:
     body = response.json()
     assert body["llm_adapter_enabled"] is True
     assert body["results"][0]["llm_observation"]["decision"] == "FAIL"
-    # Milestone-1 safety: final gate should remain deterministic-only behavior.
-    assert body["final_gate"] == body["results"][0]["decision"]
+    assert body["results"][0]["fusion_observation"]["final_decision"] == "REVIEW_REQUIRED"
+    assert body["final_gate"] == "REVIEW_REQUIRED"
 
 
 def test_llm_flag_toggle_does_not_change_deterministic_gate(monkeypatch) -> None:
@@ -170,15 +172,76 @@ def test_llm_flag_toggle_does_not_change_deterministic_gate(monkeypatch) -> None
 
     class FakeLLM:
         def __init__(self) -> None:
-            self.decision = "REVIEW_REQUIRED"
-            self.confidence = 0.2
-            self.summary = "llm says review"
+            self.decision = "PASS"
+            self.confidence = 0.99
+            self.summary = "llm says pass"
             self.fallback = False
             self.error_type = None
             self.attempts = 1
+            self.findings = []
+            self.remediation_hints = []
 
     monkeypatch.setattr("app.api.evaluate_with_openai", lambda request: FakeLLM())
     on_response = client.post("/v1/evaluate-pr", json=payload)
     on_body = on_response.json()
+    assert on_body["final_gate"] == "PASS"
     assert on_body["final_gate"] == off_gate
     assert on_body["results"][0]["llm_observation"] is not None
+
+
+def test_llm_low_confidence_pass_becomes_review_required(monkeypatch) -> None:
+    monkeypatch.setenv("COMPLIANCE_LLM_ENABLED", "true")
+
+    class FakeLLM:
+        def __init__(self) -> None:
+            self.decision = "PASS"
+            self.confidence = 0.1
+            self.summary = "low confidence pass"
+            self.fallback = False
+            self.error_type = None
+            self.attempts = 1
+            self.findings = []
+            self.remediation_hints = []
+
+    monkeypatch.setattr("app.api.evaluate_with_openai", lambda request: FakeLLM())
+    payload = {
+        "repo": "acme/compliance-ci",
+        "pr_number": 49,
+        "commit_sha": "abcdef7654321",
+        "specs": [
+            {"path": "backend/features/payments/card_capture.yaml", "spec_yaml": VALID_SPEC},
+        ],
+    }
+    response = client.post("/v1/evaluate-pr", json=payload)
+    body = response.json()
+    assert body["results"][0]["fusion_observation"]["final_decision"] == "REVIEW_REQUIRED"
+    assert body["final_gate"] == "REVIEW_REQUIRED"
+
+
+def test_llm_fallback_forces_conservative_review(monkeypatch) -> None:
+    monkeypatch.setenv("COMPLIANCE_LLM_ENABLED", "true")
+
+    class FakeLLM:
+        def __init__(self) -> None:
+            self.decision = "PASS"
+            self.confidence = 0.99
+            self.summary = "fallback simulated"
+            self.fallback = True
+            self.error_type = "provider_error"
+            self.attempts = 3
+            self.findings = []
+            self.remediation_hints = []
+
+    monkeypatch.setattr("app.api.evaluate_with_openai", lambda request: FakeLLM())
+    payload = {
+        "repo": "acme/compliance-ci",
+        "pr_number": 50,
+        "commit_sha": "abcdef7654321",
+        "specs": [
+            {"path": "backend/features/payments/card_capture.yaml", "spec_yaml": VALID_SPEC},
+        ],
+    }
+    response = client.post("/v1/evaluate-pr", json=payload)
+    body = response.json()
+    assert body["final_gate"] == "REVIEW_REQUIRED"
+    assert "LLM_FALLBACK_CONSERVATIVE" in body["results"][0]["fusion_observation"]["reason_codes"]

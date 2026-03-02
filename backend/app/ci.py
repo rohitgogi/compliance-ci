@@ -75,6 +75,8 @@ def render_pr_comment(results: list[object], gate: str) -> str:
         decision = getattr(result, "decision", None)
         risk_score = getattr(result, "risk_score", None)
         evidence_chunk_ids = getattr(result, "evidence_chunk_ids", []) or []
+        fusion_observation = getattr(result, "fusion_observation", None) or {}
+        llm_observation = getattr(result, "llm_observation", None) or {}
         if error:
             lines.append(
                 f"- `{path}` -> `FAIL` (invalid spec): {error}"
@@ -85,6 +87,24 @@ def render_pr_comment(results: list[object], gate: str) -> str:
         lines.append(
             f"- `{path}` -> `{decision}` (risk `{risk_score}`), evidence: {evidence}"
         )
+        if fusion_observation:
+            fused_confidence = fusion_observation.get("fused_confidence")
+            reason_codes = ", ".join(fusion_observation.get("reason_codes", [])) or "none"
+            explanation = fusion_observation.get("explanation", "")
+            lines.append(
+                f"  - Fusion confidence: `{fused_confidence}` | reasons: {reason_codes}"
+            )
+            if explanation:
+                lines.append(f"  - Why: {explanation}")
+
+            remediation_hints = fusion_observation.get("remediation_hints", []) or []
+            if remediation_hints:
+                lines.append(f"  - Remediation: {'; '.join(remediation_hints)}")
+        elif llm_observation:
+            lines.append(
+                f"  - LLM observation: decision `{llm_observation.get('decision')}` "
+                f"confidence `{llm_observation.get('confidence')}`"
+            )
     return "\n".join(lines)
 
 

@@ -22,6 +22,8 @@ def result(
     risk_score: int | None = None,
     evidence_chunk_ids: list[str] | None = None,
     error: str | None = None,
+    llm_observation: dict | None = None,
+    fusion_observation: dict | None = None,
 ):
     return SimpleNamespace(
         path=path,
@@ -29,6 +31,8 @@ def result(
         risk_score=risk_score,
         evidence_chunk_ids=evidence_chunk_ids or [],
         error=error,
+        llm_observation=llm_observation,
+        fusion_observation=fusion_observation,
     )
 
 
@@ -76,6 +80,29 @@ def test_render_pr_comment_contains_marker_and_rows() -> None:
     assert "Final Gate: `FAIL`" in report
     assert "card_capture.yaml" in report
     assert "invalid spec" in report
+
+
+def test_render_pr_comment_includes_fusion_explanation_and_remediation() -> None:
+    report = render_pr_comment(
+        [
+            result(
+                path="backend/features/payments/card_capture.yaml",
+                decision="REVIEW_REQUIRED",
+                risk_score=44,
+                evidence_chunk_ids=["REG-US-KYC-001"],
+                fusion_observation={
+                    "fused_confidence": 0.62,
+                    "reason_codes": ["MIXED_SIGNAL_REVIEW"],
+                    "explanation": "Signals conflicted so review is required.",
+                    "remediation_hints": ["Add control evidence."],
+                },
+            ),
+        ],
+        gate="REVIEW_REQUIRED",
+    )
+    assert "Fusion confidence" in report
+    assert "Why: Signals conflicted so review is required." in report
+    assert "Remediation: Add control evidence." in report
 
 
 def test_render_pr_comment_is_deterministic_and_handles_empty_evidence() -> None:

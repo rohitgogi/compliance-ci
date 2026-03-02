@@ -99,14 +99,18 @@ def test_validate_response_contract_accepts_valid_response() -> None:
         "commit_sha": "abcdef1",
         "final_gate": "PASS",
         "comment_markdown": "ok",
+        "llm_adapter_enabled": True,
         "results": [
             {
                 "path": "backend/features/payments/a.yaml",
                 "feature_id": "payments_a",
                 "decision": "PASS",
                 "risk_score": 12,
+                "deterministic_confidence": 0.88,
                 "evidence_chunk_ids": [],
                 "reasoning_summary": "ok",
+                "llm_observation": {"decision": "PASS", "confidence": 0.9},
+                "fusion_observation": {"final_decision": "PASS", "fused_confidence": 0.9},
                 "error": None,
                 "validation_details": [],
             }
@@ -142,6 +146,14 @@ def test_validate_response_contract_accepts_valid_response() -> None:
             "final_gate": "BAD_GATE",
             "comment_markdown": "ok",
             "results": [],
+        },
+        {
+            "repo": "acme/compliance-ci",
+            "pr_number": 1,
+            "commit_sha": "abcdef1",
+            "final_gate": "PASS",
+            "comment_markdown": "ok",
+            "results": [{"path": "x", "decision": "PASS", "risk_score": 20, "deterministic_confidence": 1.5}],
         },
     ],
 )

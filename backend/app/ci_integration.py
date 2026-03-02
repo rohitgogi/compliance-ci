@@ -23,6 +23,9 @@ class FeatureResultContract(BaseModel):
     risk_score: int | None = None
     evidence_chunk_ids: list[str] = Field(default_factory=list)
     reasoning_summary: str | None = None
+    deterministic_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    llm_observation: dict[str, Any] | None = None
+    fusion_observation: dict[str, Any] | None = None
     error: str | None = None
     validation_details: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -56,6 +59,7 @@ class EvaluationResponseContract(BaseModel):
     commit_sha: str
     final_gate: str
     comment_markdown: str
+    llm_adapter_enabled: bool = False
     results: list[FeatureResultContract]
 
     @field_validator("final_gate")

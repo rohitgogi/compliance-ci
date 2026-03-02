@@ -8,7 +8,8 @@ from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.ci import determine_pr_gate, render_pr_comment
-from app.evaluator import evaluate_feature_spec
+from app.evaluator import evaluate_feature_spec, retrieve_relevant_chunks
+from app.fusion import FusionInput, fuse_decision
 from app.llm_adapter import LLMEvaluationRequest, evaluate_with_openai
 from app.parser import SpecValidationError, parse_feature_spec_yaml
 
@@ -55,9 +56,11 @@ class FeatureEvaluationResponse(BaseModel):
     feature_id: str | None = None
     decision: str | None = None
     risk_score: int | None = None
+    deterministic_confidence: float | None = None
     evidence_chunk_ids: list[str] = []
     reasoning_summary: str | None = None
     llm_observation: dict | None = None
+    fusion_observation: dict | None = None
     error: str | None = None
     validation_details: list[dict] = []
 
@@ -94,13 +97,16 @@ def evaluate_pr(payload: EvaluatePRRequest) -> EvaluatePRResponse:
         try:
             parsed = parse_feature_spec_yaml(changed_spec.spec_yaml)
             evaluation = evaluate_feature_spec(parsed)
+            deterministic_confidence = max(0.0, min(1.0, 1.0 - (evaluation.risk_score / 100.0)))
+            final_decision = evaluation.decision
             llm_observation: dict | None = None
+            fusion_observation: dict | None = None
             if llm_enabled:
-                # Milestone-1: observational only. Final gate remains deterministic.
+                evidence_chunks = retrieve_relevant_chunks(parsed, limit=10)
                 llm_result = evaluate_with_openai(
                     LLMEvaluationRequest(
                         feature=parsed,
-                        evidence_chunks=[],
+                        evidence_chunks=evidence_chunks,
                         correlation_id=f"pr-{payload.pr_number}:{parsed.feature_id}",
                     )
                 )
@@ -112,15 +118,36 @@ def evaluate_pr(payload: EvaluatePRRequest) -> EvaluatePRResponse:
                     "error_type": llm_result.error_type,
                     "attempts": llm_result.attempts,
                 }
+                fusion_result = fuse_decision(
+                    FusionInput(
+                        deterministic_decision=evaluation.decision,
+                        deterministic_confidence=deterministic_confidence,
+                        llm_decision=llm_result.decision,
+                        llm_confidence=llm_result.confidence,
+                        llm_fallback=llm_result.fallback,
+                        llm_findings=[finding.title for finding in llm_result.findings],
+                        llm_remediation_hints=llm_result.remediation_hints,
+                    )
+                )
+                final_decision = fusion_result.final_decision.value
+                fusion_observation = {
+                    "final_decision": fusion_result.final_decision.value,
+                    "fused_confidence": fusion_result.fused_confidence,
+                    "reason_codes": [reason.value for reason in fusion_result.reason_codes],
+                    "explanation": fusion_result.explanation,
+                    "remediation_hints": fusion_result.remediation_hints,
+                }
             results.append(
                 FeatureEvaluationResponse(
                     path=changed_spec.path,
                     feature_id=evaluation.feature_id,
-                    decision=evaluation.decision,
+                    decision=final_decision,
                     risk_score=evaluation.risk_score,
+                    deterministic_confidence=deterministic_confidence,
                     evidence_chunk_ids=evaluation.evidence_chunk_ids,
                     reasoning_summary=evaluation.reasoning_summary,
                     llm_observation=llm_observation,
+                    fusion_observation=fusion_observation,
                 )
             )
         except SpecValidationError as exc:
