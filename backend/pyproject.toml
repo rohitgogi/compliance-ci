@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "compliance-ci-backend"
+version = "0.1.0"
+description = "Compliance CI backend MVP"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.116.0",
+  "pydantic>=2.11.0",
+  "pyyaml>=6.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28.0",
+  "pytest>=8.4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

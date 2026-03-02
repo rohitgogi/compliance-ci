@@ -1,0 +1,71 @@
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# --- Python / tooling artifacts ---
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Build / package outputs ---
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Runtime state / local data ---
+*.log
+logs/
+tmp/
+*.tmp
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# --- Environment / secrets ---
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+*.csr
+*.kdbx
+*.secret
+secrets/
+credentials/
+**/credentials.json
+**/service-account*.json
+
+# --- Cloud / infra credentials ---
+.aws/
+.azure/
+.gcp/
+*.tfstate
+*.tfstate.*
+
+# --- Node artifacts (if frontend tooling is added later) ---
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
