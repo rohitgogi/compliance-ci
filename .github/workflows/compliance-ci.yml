@@ -36,7 +36,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set +e
-          RESPONSE=$(python backend/scripts/run_ci_check.py)
+          RESPONSE=$(python backend/scripts/run_ci_check.py | tail -n1)
           EXIT_CODE=$?
           set -e
           {

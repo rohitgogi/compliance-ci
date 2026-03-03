@@ -1,0 +1,15 @@
+# Intentionally non-compliant feature spec for CI demo
+# Expected: FAIL (restricted data, US+EU without KYC/GDPR, planned-only controls, no audit)
+feature_id: risky_payments
+feature_name: High-Risk Payment Flow
+owner_team: payments-platform
+data_classification: restricted
+jurisdictions: [US, EU]
+controls:
+  - id: DATA-001
+    description: Data handling TBD
+    status: planned
+  - id: SEC-001
+    description: Security review pending
+    status: planned
+change_summary: New payment flow for restricted PII across US and EU with controls not yet implemented.
