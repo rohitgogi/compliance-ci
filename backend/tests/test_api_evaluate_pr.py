@@ -146,11 +146,11 @@ def test_llm_adapter_flag_on_is_observational_only(monkeypatch) -> None:
             self.findings = []
             self.remediation_hints = ["Add stricter controls"]
 
-    def fake_evaluate_with_openai(request):
+    def fake_evaluate_with_groq(request):
         # Mixed signal should conservatively become REVIEW_REQUIRED.
         return FakeLLM(decision="FAIL", confidence=0.99)
 
-    monkeypatch.setattr("app.api.evaluate_with_openai", fake_evaluate_with_openai)
+    monkeypatch.setattr("app.api.evaluate_with_groq", fake_evaluate_with_groq)
     payload = {
         "repo": "acme/compliance-ci",
         "pr_number": 47,
@@ -195,7 +195,7 @@ def test_llm_flag_toggle_does_not_change_deterministic_gate(monkeypatch) -> None
             self.findings = []
             self.remediation_hints = []
 
-    monkeypatch.setattr("app.api.evaluate_with_openai", lambda request: FakeLLM())
+    monkeypatch.setattr("app.api.evaluate_with_groq", lambda request: FakeLLM())
     on_response = client.post("/v1/evaluate-pr", json=payload)
     on_body = on_response.json()
     assert on_body["final_gate"] == "PASS"
@@ -217,7 +217,7 @@ def test_llm_low_confidence_pass_becomes_review_required(monkeypatch) -> None:
             self.findings = []
             self.remediation_hints = []
 
-    monkeypatch.setattr("app.api.evaluate_with_openai", lambda request: FakeLLM())
+    monkeypatch.setattr("app.api.evaluate_with_groq", lambda request: FakeLLM())
     payload = {
         "repo": "acme/compliance-ci",
         "pr_number": 49,
@@ -246,7 +246,7 @@ def test_llm_fallback_forces_conservative_review(monkeypatch) -> None:
             self.findings = []
             self.remediation_hints = []
 
-    monkeypatch.setattr("app.api.evaluate_with_openai", lambda request: FakeLLM())
+    monkeypatch.setattr("app.api.evaluate_with_groq", lambda request: FakeLLM())
     payload = {
         "repo": "acme/compliance-ci",
         "pr_number": 50,
@@ -277,7 +277,7 @@ def test_api_persists_hybrid_evaluation_fields(tmp_path: Path, monkeypatch) -> N
             self.findings = []
             self.remediation_hints = []
 
-    monkeypatch.setattr("app.api.evaluate_with_openai", lambda request: FakeLLM())
+    monkeypatch.setattr("app.api.evaluate_with_groq", lambda request: FakeLLM())
     # Ensure cache picks up test DB path.
     from app.api import _get_store
 

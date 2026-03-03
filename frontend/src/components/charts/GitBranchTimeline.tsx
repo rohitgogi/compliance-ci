@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { getAllEvaluations } from "@/lib/mock";
 import type { Evaluation, Decision } from "@/lib/types";
 import { truncateSha } from "@/lib/utils";
 
@@ -40,14 +39,19 @@ interface ProcessedNode {
   glow: string;
 }
 
-export default function GitBranchTimeline() {
+const DEFAULT_TIMELINE_POINTS = [
+  { label: "D-2", state: "default" },
+  { label: "D-1", state: "default" },
+  { label: "Today", state: "default" },
+];
+
+export default function GitBranchTimeline({ evaluations }: { evaluations: Evaluation[] }) {
   const [hovered, setHovered] = useState<number | null>(null);
   const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
-  const allEvals = getAllEvaluations();
-  const sorted = [...allEvals].sort(
+  const sorted = [...evaluations].sort(
     (a, b) => new Date(a.evaluated_at).getTime() - new Date(b.evaluated_at).getTime()
   );
 
@@ -89,8 +93,25 @@ export default function GitBranchTimeline() {
 
   if (nodes.length === 0) {
     return (
-      <div className="flex items-center justify-center py-8 text-[13px] text-text-light-muted dark:text-text-muted">
-        No evaluations yet
+      <div className="rounded-lg border border-dashed border-border-light dark:border-border-dark p-4">
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-[12px] font-medium text-text-light-primary dark:text-text-primary">
+            PR evaluation timeline defaults
+          </p>
+          <p className="text-[11px] text-text-light-muted dark:text-text-muted">
+            Connect your codebase to get started
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {DEFAULT_TIMELINE_POINTS.map((point) => (
+            <div key={point.label} className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-text-light-muted dark:bg-text-muted" />
+              <span className="text-[11px] text-text-light-muted dark:text-text-muted">
+                {point.label} ({point.state})
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
     );
   }

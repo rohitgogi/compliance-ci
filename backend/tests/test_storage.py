@@ -299,3 +299,64 @@ def test_migration_adds_hybrid_columns_to_legacy_evaluations_table(tmp_path: Pat
         }
     assert "fused_confidence" in columns
     assert "llm_decision" in columns
+
+
+def test_list_helpers_for_frontend_reads(tmp_path: Path) -> None:
+    store = ComplianceStore(tmp_path / "state.db")
+    store.upsert_feature_spec(
+        feature_id="feature_a",
+        spec_version="v1",
+        content_hash="hash-a",
+        path="backend/features/feature_a.yaml",
+        parsed_payload={
+            "feature_id": "feature_a",
+            "feature_name": "Feature A",
+            "owner_team": "risk",
+            "data_classification": "confidential",
+            "jurisdictions": ["US"],
+            "controls": [{"id": "KYC-001", "description": "KYC", "status": "implemented"}],
+            "change_summary": "seed",
+        },
+    )
+    store.record_evaluation(
+        EvaluationRecord(
+            feature_id="feature_a",
+            spec_version="v1",
+            corpus_version="v1",
+            risk_score=22,
+            decision="PASS",
+            evidence_chunk_ids=["REG-1"],
+            reasoning_summary="ok",
+            commit_sha="sha-1",
+        )
+    )
+    store.register_corpus_version("v1", source_set="core-v1")
+    store.create_reevaluation_job(
+        job_id="reeval-v1",
+        target_corpus_version="v1",
+        scope=["feature_a"],
+    )
+    store.record_regression(
+        job_id="reeval-v1",
+        feature_id="feature_a",
+        previous_decision="PASS",
+        new_decision="REVIEW_REQUIRED",
+        regressed=True,
+        details={"risk_score": 40},
+    )
+
+    evaluations = store.list_evaluations(limit=10)
+    assert len(evaluations) == 1
+    assert evaluations[0]["feature_id"] == "feature_a"
+
+    features = store.list_active_features_with_latest()
+    assert len(features) == 1
+    assert features[0]["latest_decision"] == "PASS"
+
+    corpus_versions = store.list_corpus_versions()
+    assert len(corpus_versions) == 1
+    assert corpus_versions[0]["version_id"] == "v1"
+
+    results = store.list_reevaluation_results_all(regressed_only=True)
+    assert len(results) == 1
+    assert results[0]["feature_id"] == "feature_a"

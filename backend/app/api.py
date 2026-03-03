@@ -8,24 +8,57 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.ci import determine_pr_gate, render_pr_comment
-from app.evaluator import evaluate_feature_spec, retrieve_relevant_chunks
+from app.evaluator import CorpusChunk, DEFAULT_CORPUS, evaluate_feature_spec, retrieve_relevant_chunks
 from app.fusion import FusionInput, fuse_decision
-from app.llm_adapter import LLMEvaluationRequest, evaluate_with_openai
+from app.llm_adapter import LLMEvaluationRequest, evaluate_with_groq
+from app.corpus_parser import CorpusValidationError, parse_corpus_yaml
 from app.parser import SpecValidationError, parse_feature_spec_yaml
 from app.rate_limiter import SlidingWindowRateLimiter
 from app.storage import ComplianceStore, EvaluationRecord
 
 app = FastAPI(title="Compliance CI Backend", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 @lru_cache(maxsize=1)
 def _get_store() -> ComplianceStore:
     db_path = Path(os.environ.get("COMPLIANCE_DB_PATH", "data/compliance.db"))
     return ComplianceStore(db_path)
+
+
+def _get_corpus_for_evaluation() -> tuple[CorpusChunk, ...]:
+    """
+    Return the corpus to use for evaluations. Prefers the latest uploaded corpus
+    from the DB if it has chunks; otherwise falls back to DEFAULT_CORPUS.
+    """
+    store = _get_store()
+    latest = store.get_latest_corpus_version_with_chunks()
+    if latest is None:
+        return DEFAULT_CORPUS
+    version_id, chunk_dicts = latest
+    return tuple(
+        CorpusChunk(
+            chunk_id=c["chunk_id"],
+            title=c["title"],
+            text=c["text"],
+            tags=tuple(c.get("tags") or []),
+            corpus_version=version_id,
+        )
+        for c in chunk_dicts
+    )
 
 
 @lru_cache(maxsize=1)
@@ -161,10 +194,248 @@ class EvaluatePRResponse(BaseModel):
     results: list[FeatureEvaluationResponse]
 
 
+class FeatureWithLatestDecisionResponse(BaseModel):
+    """Feature contract returned for frontend feature lists."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    feature_id: str
+    feature_name: str
+    owner_team: str
+    data_classification: str
+    jurisdictions: list[str] = Field(default_factory=list)
+    controls: list[dict] = Field(default_factory=list)
+    change_summary: str
+    spec_version: str
+    active: bool
+    created_at: str
+    path: str
+    latest_decision: str | None = None
+    latest_risk_score: int | None = None
+    latest_evaluated_at: str | None = None
+    latest_corpus_version: str | None = None
+
+
+class FeatureListResponse(BaseModel):
+    """Collection response for feature list queries."""
+
+    features: list[FeatureWithLatestDecisionResponse] = Field(default_factory=list)
+
+
+class EvaluationReadResponse(BaseModel):
+    """Evaluation contract returned by read endpoints."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    feature_id: str
+    spec_version: str
+    corpus_version: str
+    risk_score: int = Field(ge=0, le=100)
+    decision: str
+    evidence_chunk_ids: list[str] = Field(default_factory=list)
+    reasoning_summary: str
+    commit_sha: str
+    evaluated_at: str
+    deterministic_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    llm_decision: str | None = None
+    llm_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    llm_fallback: bool | None = None
+    llm_error_type: str | None = None
+    llm_model: str | None = None
+    llm_attempts: int | None = Field(default=None, ge=1, le=10)
+    fused_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    fused_reason_codes: list[str] = Field(default_factory=list)
+    fused_explanation: str | None = None
+    remediation_hints: list[str] = Field(default_factory=list)
+
+
+class EvaluationsListResponse(BaseModel):
+    """Collection response for evaluations list queries."""
+
+    evaluations: list[EvaluationReadResponse] = Field(default_factory=list)
+
+
+class FeatureDetailResponse(BaseModel):
+    """Feature detail payload with evaluation history."""
+
+    feature: FeatureWithLatestDecisionResponse
+    evaluations: list[EvaluationReadResponse] = Field(default_factory=list)
+
+
+class CorpusVersionResponse(BaseModel):
+    """Corpus version payload."""
+
+    version_id: str
+    source_set: str
+    released_at: str
+
+
+class CorpusVersionListResponse(BaseModel):
+    """Collection response for corpus versions."""
+
+    corpus_versions: list[CorpusVersionResponse] = Field(default_factory=list)
+
+
+class CorpusUploadResponse(BaseModel):
+    """Response after a successful corpus upload."""
+
+    version_id: str
+    source_set: str
+    released_at: str
+    chunk_count: int
+    chunk_ids: list[str] = Field(default_factory=list)
+
+
+class ReevaluationResultResponse(BaseModel):
+    """Reevaluation result payload."""
+
+    job_id: str
+    feature_id: str
+    previous_decision: str
+    new_decision: str
+    regressed: bool
+    details: dict = Field(default_factory=dict)
+    created_at: str
+
+
+class ReevaluationResultListResponse(BaseModel):
+    """Collection response for reevaluation results."""
+
+    results: list[ReevaluationResultResponse] = Field(default_factory=list)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     """Liveness probe endpoint."""
     return {"status": "ok"}
+
+
+@app.get("/v1/features", response_model=FeatureListResponse)
+def list_features() -> FeatureListResponse:
+    """Return active features merged with latest evaluation metadata."""
+    store = _get_store()
+    return FeatureListResponse(features=store.list_active_features_with_latest())
+
+
+@app.get("/v1/features/{feature_id}", response_model=FeatureDetailResponse)
+def get_feature_detail(feature_id: str) -> FeatureDetailResponse:
+    """Return one active feature and its evaluation history."""
+    store = _get_store()
+    spec = store.get_latest_feature_spec(feature_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail=f"Feature not found: {feature_id}")
+    payload = spec["parsed_payload"]
+    feature = FeatureWithLatestDecisionResponse(
+        feature_id=payload.get("feature_id", feature_id),
+        feature_name=payload.get("feature_name", feature_id),
+        owner_team=payload.get("owner_team", "unknown"),
+        data_classification=payload.get("data_classification", "internal"),
+        jurisdictions=payload.get("jurisdictions", []),
+        controls=payload.get("controls", []),
+        change_summary=payload.get("change_summary", ""),
+        spec_version=spec["spec_version"],
+        active=spec["active"],
+        created_at=spec["created_at"],
+        path=spec["path"],
+    )
+    evaluations = store.list_evaluations(feature_id=feature_id, limit=200)
+    return FeatureDetailResponse(feature=feature, evaluations=evaluations)
+
+
+@app.get("/v1/evaluations", response_model=EvaluationsListResponse)
+def list_evaluations(
+    limit: int = 100,
+    offset: int = 0,
+    feature_id: str | None = None,
+) -> EvaluationsListResponse:
+    """Return evaluation history, globally or for one feature."""
+    store = _get_store()
+    rows = store.list_evaluations(limit=limit, offset=offset, feature_id=feature_id)
+    return EvaluationsListResponse(evaluations=rows)
+
+
+@app.get("/v1/corpus-versions", response_model=CorpusVersionListResponse)
+def list_corpus_versions(limit: int = 100) -> CorpusVersionListResponse:
+    """Return known corpus versions, newest first."""
+    store = _get_store()
+    return CorpusVersionListResponse(corpus_versions=store.list_corpus_versions(limit=limit))
+
+
+@app.post("/v1/corpus-versions/upload", response_model=CorpusUploadResponse)
+async def upload_corpus(file: UploadFile = File(..., description="Corpus YAML file")) -> CorpusUploadResponse:
+    """
+    Upload a corpus YAML file. The file must define version_id, source_set, and chunks.
+
+    Example format:
+        version_id: v2
+        source_set: "User uploaded"
+        chunks:
+          - chunk_id: REG-001
+            title: Regulation title
+            text: Regulation body text.
+            tags: [US, KYC]
+    """
+    if not file.filename or not (file.filename.endswith(".yml") or file.filename.endswith(".yaml")):
+        raise HTTPException(
+            status_code=400,
+            detail="File must be a YAML file (.yml or .yaml)",
+        )
+    size = 0
+    chunks_list: list[bytes] = []
+    max_size = 500_000  # 500KB
+    while chunk := await file.read(8192):
+        size += len(chunk)
+        if size > max_size:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Corpus file exceeds maximum size of {max_size // 1024}KB",
+            )
+        chunks_list.append(chunk)
+    raw = b"".join(chunks_list).decode("utf-8", errors="replace")
+    try:
+        parsed = parse_corpus_yaml(raw)
+    except CorpusValidationError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+
+    store = _get_store()
+    chunk_dicts = [
+        {
+            "chunk_id": c.chunk_id,
+            "title": c.title,
+            "text": c.text,
+            "tags": list(c.tags),
+        }
+        for c in parsed.chunks
+    ]
+    store.upsert_corpus_version_with_chunks(
+        version_id=parsed.version_id,
+        source_set=parsed.source_set,
+        chunks=chunk_dicts,
+    )
+    meta = store.get_corpus_version(parsed.version_id)
+    released_at = meta["released_at"] if meta else ""
+    return CorpusUploadResponse(
+        version_id=parsed.version_id,
+        source_set=parsed.source_set,
+        released_at=released_at,
+        chunk_count=len(parsed.chunks),
+        chunk_ids=[c.chunk_id for c in parsed.chunks],
+    )
+
+
+@app.get("/v1/reevaluation-results", response_model=ReevaluationResultListResponse)
+def list_reevaluation_results(
+    job_id: str | None = None,
+    regressed_only: bool = False,
+    limit: int = 200,
+) -> ReevaluationResultListResponse:
+    """Return reevaluation results for one job or globally."""
+    store = _get_store()
+    if job_id:
+        rows = store.list_reevaluation_results(job_id)
+    else:
+        rows = store.list_reevaluation_results_all(regressed_only=regressed_only, limit=limit)
+    return ReevaluationResultListResponse(results=rows)
 
 
 @app.post("/v1/evaluate-pr", response_model=EvaluatePRResponse)
@@ -188,17 +459,18 @@ def evaluate_pr(payload: EvaluatePRRequest, request: Request) -> EvaluatePRRespo
     results: list[FeatureEvaluationResponse] = []
     llm_enabled = os.environ.get("COMPLIANCE_LLM_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
     store = _get_store()
+    corpus = _get_corpus_for_evaluation()
     for changed_spec in payload.specs:
         try:
             parsed = parse_feature_spec_yaml(changed_spec.spec_yaml)
-            evaluation = evaluate_feature_spec(parsed)
+            evaluation = evaluate_feature_spec(parsed, corpus=corpus)
             deterministic_confidence = max(0.0, min(1.0, 1.0 - (evaluation.risk_score / 100.0)))
             final_decision = evaluation.decision
             llm_observation: dict | None = None
             fusion_observation: dict | None = None
             if llm_enabled:
-                evidence_chunks = retrieve_relevant_chunks(parsed, limit=10)
-                llm_result = evaluate_with_openai(
+                evidence_chunks = retrieve_relevant_chunks(parsed, corpus=corpus, limit=10)
+                llm_result = evaluate_with_groq(
                     LLMEvaluationRequest(
                         feature=parsed,
                         evidence_chunks=evidence_chunks,
@@ -259,7 +531,7 @@ def evaluate_pr(payload: EvaluatePRRequest, request: Request) -> EvaluatePRRespo
                     llm_confidence=llm_observation.get("confidence") if llm_observation else None,
                     llm_fallback=llm_observation.get("fallback") if llm_observation else None,
                     llm_error_type=llm_observation.get("error_type") if llm_observation else None,
-                    llm_model=os.environ.get("OPENAI_MODEL", "gpt-4.1-mini") if llm_observation else None,
+                    llm_model=os.environ.get("COMPLIANCE_GROQ_MODEL", "llama-3.3-70b") if llm_observation else None,
                     llm_attempts=llm_observation.get("attempts") if llm_observation else None,
                     fused_confidence=fusion_observation.get("fused_confidence") if fusion_observation else None,
                     fused_reason_codes=fusion_observation.get("reason_codes") if fusion_observation else None,

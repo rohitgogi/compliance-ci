@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.schemas import FeatureComplianceSpec
+from app.vector_retriever import PgVectorCorpusStore, load_vector_config
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,31 @@ def retrieve_relevant_chunks(
     """
     if limit <= 0:
         return []
+
+    query_text = (
+        f"feature_name: {spec.feature_name}\n"
+        f"data_classification: {spec.data_classification}\n"
+        f"jurisdictions: {', '.join(spec.jurisdictions)}\n"
+        f"controls: {', '.join(f'{c.id}:{c.status}' for c in spec.controls)}\n"
+        f"change_summary: {spec.change_summary}"
+    )
+
+    # Primary retrieval path: local embeddings + pgvector.
+    vector_config = load_vector_config()
+    if vector_config is not None:
+        try:
+            vector_store = PgVectorCorpusStore(vector_config)
+            vector_store.ingest_chunks(corpus)
+            vector_matches = vector_store.search(
+                query_text=query_text,
+                scope_chunk_ids=[chunk.chunk_id for chunk in corpus],
+                limit=limit,
+            )
+            if vector_matches:
+                return vector_matches
+        except Exception:
+            # Safety-first fallback to deterministic retrieval when vector infra is unavailable.
+            pass
 
     search_terms = {
         spec.feature_name.upper(),

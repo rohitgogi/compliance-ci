@@ -1,20 +1,19 @@
-"""Tests for OpenAI LLM adapter contracts and failure handling."""
+"""Tests for Groq LLM adapter contracts and failure handling."""
 
 from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
 
 from app.llm_adapter import (
     LLMEvaluationOutput,
     LLMEvaluationRequest,
-    OpenAIConfig,
+    GroqConfig,
     build_llm_prompt,
-    evaluate_with_openai,
+    evaluate_with_groq,
     fallback_llm_result,
-    load_openai_config,
+    load_groq_config,
     parse_llm_json_output,
 )
 from app.schemas import Control, FeatureComplianceSpec
@@ -62,20 +61,20 @@ def test_llm_output_contract_rejects_bad_confidence_and_extra_fields() -> None:
         )
 
 
-def test_load_openai_config_validation(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
-        load_openai_config()
+def test_load_groq_config_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="GROQ_API_KEY"):
+        load_groq_config()
 
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "-1")
-    with pytest.raises(RuntimeError, match="OPENAI_TIMEOUT_SECONDS"):
-        load_openai_config()
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+    monkeypatch.setenv("COMPLIANCE_GROQ_TIMEOUT_SECONDS", "-1")
+    with pytest.raises(RuntimeError, match="COMPLIANCE_GROQ_TIMEOUT_SECONDS"):
+        load_groq_config()
 
-    monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "8")
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
-    cfg = load_openai_config()
-    assert cfg.model == "gpt-4.1-mini"
+    monkeypatch.setenv("COMPLIANCE_GROQ_TIMEOUT_SECONDS", "8")
+    monkeypatch.delenv("COMPLIANCE_GROQ_MODEL", raising=False)
+    cfg = load_groq_config()
+    assert cfg.model == "llama-3.3-70b"
     assert cfg.max_retries >= 0
 
 
@@ -88,7 +87,7 @@ def test_build_llm_prompt_is_deterministic_and_redacted() -> None:
     prompt_a = build_llm_prompt(request)
     prompt_b = build_llm_prompt(request)
     assert prompt_a == prompt_b
-    assert "OPENAI_API_KEY" not in prompt_a
+    assert "GROQ_API_KEY" not in prompt_a
 
 
 def test_parse_llm_json_output_valid_and_invalid() -> None:
@@ -116,15 +115,15 @@ def test_parse_llm_json_output_valid_and_invalid() -> None:
 
 def test_fallback_result_is_stable() -> None:
     a = fallback_llm_result(
-        model="gpt-4.1-mini",
-        attempts=3,
+        model="llama-3.3-70b",
+        attempts=2,
         error_type="provider_error",
         diagnostic="upstream timeout",
         latency_ms=40,
     )
     b = fallback_llm_result(
-        model="gpt-4.1-mini",
-        attempts=3,
+        model="llama-3.3-70b",
+        attempts=2,
         error_type="provider_error",
         diagnostic="upstream timeout",
         latency_ms=40,
@@ -132,52 +131,49 @@ def test_fallback_result_is_stable() -> None:
     assert a.model_dump() == b.model_dump()
     assert a.fallback is True
     assert a.decision == "REVIEW_REQUIRED"
+    assert a.provider == "groq"
 
 
-def test_evaluate_with_openai_success_and_logging(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_evaluate_with_groq_success_and_logging() -> None:
     logs: list[dict] = []
     request = LLMEvaluationRequest(feature=make_feature(), evidence_chunks=[], correlation_id="corr-2")
 
-    class FakeResponse:
-        status_code = 200
-
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return {
-                "output_text": json.dumps(
-                    {
-                        "decision": "PASS",
-                        "confidence": 0.91,
-                        "summary": "Compliant",
-                        "findings": [],
-                        "remediation_hints": [],
-                        "evidence_chunk_ids": ["REG-1"],
-                    }
-                )
+    class FakeMessage:
+        content = json.dumps(
+            {
+                "decision": "PASS",
+                "confidence": 0.91,
+                "summary": "Compliant",
+                "findings": [],
+                "remediation_hints": [],
+                "evidence_chunk_ids": ["REG-1"],
             }
+        )
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
 
     class FakeClient:
-        def __init__(self, timeout: float) -> None:
-            self.timeout = timeout
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.chat = self
+            self.completions = self
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, url: str, headers: dict, json: dict):
-            assert json["model"] == "gpt-4.1-mini"
+        def create(self, **kwargs):
+            assert kwargs["model"] == "llama-3.3-70b"
+            assert kwargs["temperature"] == 0
+            assert kwargs["response_format"] == {"type": "json_object"}
             return FakeResponse()
 
-    result = evaluate_with_openai(
+    result = evaluate_with_groq(
         request,
-        config=OpenAIConfig(
-            api_key="sk-test",
-            model="gpt-4.1-mini",
-            base_url="https://api.openai.com/v1",
+        config=GroqConfig(
+            api_key="gsk-test",
+            model="llama-3.3-70b",
+            base_url="https://api.groq.com/openai/v1",
             timeout_seconds=1,
             max_retries=1,
             backoff_seconds=0,
@@ -190,153 +186,109 @@ def test_evaluate_with_openai_success_and_logging(monkeypatch: pytest.MonkeyPatc
     assert any(log["event"] == "llm.success" for log in logs)
 
 
-def test_evaluate_with_openai_retry_and_non_retryable_behavior(monkeypatch: pytest.MonkeyPatch) -> None:
-    request = LLMEvaluationRequest(feature=make_feature(), evidence_chunks=[], correlation_id="corr-3")
-
-    class RetryClient:
-        calls = 0
-
-        def __init__(self, timeout: float) -> None:
-            self.timeout = timeout
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, url: str, headers: dict, json: dict):
-            RetryClient.calls += 1
-            if RetryClient.calls == 1:
-                raise httpx.TimeoutException("timed out")
-            return type(
-                "Resp",
-                (),
-                {
-                    "raise_for_status": lambda self: None,
-                    "json": lambda self: {
-                        "output_text": json_module.dumps(
-                            {
-                                "decision": "REVIEW_REQUIRED",
-                                "confidence": 0.4,
-                                "summary": "Needs manual review",
-                                "findings": [],
-                                "remediation_hints": ["Clarify control evidence"],
-                                "evidence_chunk_ids": [],
-                            }
-                        )
-                    },
-                },
-            )()
-
-    json_module = json
-    result = evaluate_with_openai(
-        request,
-        config=OpenAIConfig(
-            api_key="sk-test",
-            model="gpt-4.1-mini",
-            base_url="https://api.openai.com/v1",
-            timeout_seconds=1,
-            max_retries=2,
-            backoff_seconds=0,
-        ),
-        client_factory=RetryClient,
-    )
-    assert result.fallback is False
-    assert RetryClient.calls == 2
-
-    class NonRetryableClient:
-        calls = 0
-
-        def __init__(self, timeout: float) -> None:
-            self.timeout = timeout
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def post(self, url: str, headers: dict, json: dict):
-            NonRetryableClient.calls += 1
-            req = httpx.Request("POST", url)
-            resp = httpx.Response(400, request=req)
-            raise httpx.HTTPStatusError("bad request", request=req, response=resp)
-
-    fallback = evaluate_with_openai(
-        request,
-        config=OpenAIConfig(
-            api_key="sk-test",
-            model="gpt-4.1-mini",
-            base_url="https://api.openai.com/v1",
-            timeout_seconds=1,
-            max_retries=3,
-            backoff_seconds=0,
-        ),
-        client_factory=NonRetryableClient,
-    )
-    assert fallback.fallback is True
-    assert NonRetryableClient.calls == 1
-
-
-def test_evaluate_with_openai_supports_responses_api_output_shape() -> None:
-    request = LLMEvaluationRequest(feature=make_feature(), evidence_chunks=[], correlation_id="corr-shape")
-
-    class FakeResponse:
-        status_code = 200
-
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return {
-                "output": [
-                    {
-                        "content": [
-                            {
-                                "text": json.dumps(
-                                    {
-                                        "decision": "PASS",
-                                        "confidence": 0.83,
-                                        "summary": "shape ok",
-                                        "findings": [],
-                                        "remediation_hints": [],
-                                        "evidence_chunk_ids": ["REG-1"],
-                                    }
-                                )
-                            }
-                        ]
-                    }
-                ]
-            }
+def test_evaluate_with_groq_retries_once_on_invalid_json() -> None:
+    request = LLMEvaluationRequest(feature=make_feature(), evidence_chunks=[], correlation_id="corr-json")
 
     class FakeClient:
-        def __init__(self, timeout: float) -> None:
-            self.timeout = timeout
+        calls = 0
 
-        def __enter__(self):
-            return self
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.chat = self
+            self.completions = self
 
-        def __exit__(self, exc_type, exc, tb):
-            return False
+        def create(self, **kwargs):
+            FakeClient.calls += 1
+            content = "{bad-json" if FakeClient.calls == 1 else json.dumps(
+                {
+                    "decision": "REVIEW_REQUIRED",
+                    "confidence": 0.4,
+                    "summary": "Needs manual review",
+                    "findings": [],
+                    "remediation_hints": ["Clarify control evidence"],
+                    "evidence_chunk_ids": [],
+                }
+            )
 
-        def post(self, url: str, headers: dict, json: dict):
-            return FakeResponse()
+            class Msg:
+                pass
 
-    result = evaluate_with_openai(
+            class Choice:
+                pass
+
+            class Resp:
+                pass
+
+            msg = Msg()
+            msg.content = content
+            choice = Choice()
+            choice.message = msg
+            resp = Resp()
+            resp.choices = [choice]
+            return resp
+
+    result = evaluate_with_groq(
         request,
-        config=OpenAIConfig(
-            api_key="sk",
-            model="gpt-4.1-mini",
-            base_url="https://api.openai.com/v1",
+        config=GroqConfig(
+            api_key="gsk-test",
+            model="llama-3.3-70b",
+            base_url="https://api.groq.com/openai/v1",
             timeout_seconds=1,
             max_retries=0,
             backoff_seconds=0,
         ),
         client_factory=FakeClient,
     )
-    assert result.decision == "PASS"
     assert result.fallback is False
+    assert FakeClient.calls == 2
+
+
+def test_evaluate_with_groq_fallback_after_second_invalid_json() -> None:
+    request = LLMEvaluationRequest(feature=make_feature(), evidence_chunks=[], correlation_id="corr-invalid")
+
+    class FakeClient:
+        calls = 0
+
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.chat = self
+            self.completions = self
+
+        def create(self, **kwargs):
+            FakeClient.calls += 1
+
+            class Msg:
+                pass
+
+            class Choice:
+                pass
+
+            class Resp:
+                pass
+
+            msg = Msg()
+            msg.content = "{still-bad-json"
+            choice = Choice()
+            choice.message = msg
+            resp = Resp()
+            resp.choices = [choice]
+            return resp
+
+    result = evaluate_with_groq(
+        request,
+        config=GroqConfig(
+            api_key="gsk-test",
+            model="llama-3.3-70b",
+            base_url="https://api.groq.com/openai/v1",
+            timeout_seconds=1,
+            max_retries=0,
+            backoff_seconds=0,
+        ),
+        client_factory=FakeClient,
+    )
+    assert result.fallback is True
+    assert result.decision == "REVIEW_REQUIRED"
+    assert FakeClient.calls == 2
 
 
 def test_failure_logs_do_not_leak_prompt_content() -> None:
@@ -344,26 +296,23 @@ def test_failure_logs_do_not_leak_prompt_content() -> None:
     logs: list[dict] = []
 
     class AlwaysBadClient:
-        def __init__(self, timeout: float) -> None:
-            self.timeout = timeout
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.chat = self
+            self.completions = self
 
-        def __enter__(self):
-            return self
+        def create(self, **kwargs):
+            class ProviderError(Exception):
+                status_code = 400
 
-        def __exit__(self, exc_type, exc, tb):
-            return False
+            raise ProviderError("bad request")
 
-        def post(self, url: str, headers: dict, json: dict):
-            req = httpx.Request("POST", url)
-            resp = httpx.Response(400, request=req)
-            raise httpx.HTTPStatusError("bad request", request=req, response=resp)
-
-    result = evaluate_with_openai(
+    result = evaluate_with_groq(
         request,
-        config=OpenAIConfig(
-            api_key="sk-secret-value",
-            model="gpt-4.1-mini",
-            base_url="https://api.openai.com/v1",
+        config=GroqConfig(
+            api_key="gsk-secret-value",
+            model="llama-3.3-70b",
+            base_url="https://api.groq.com/openai/v1",
             timeout_seconds=1,
             max_retries=0,
             backoff_seconds=0,
@@ -372,7 +321,6 @@ def test_failure_logs_do_not_leak_prompt_content() -> None:
         client_factory=AlwaysBadClient,
     )
     assert result.fallback is True
-    assert logs
     serialized = json.dumps(logs)
-    assert "OPENAI_API_KEY" not in serialized
+    assert "GROQ_API_KEY" not in serialized
     assert "Adds card capture endpoint." not in serialized

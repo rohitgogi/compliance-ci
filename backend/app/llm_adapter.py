@@ -1,4 +1,4 @@
-"""OpenAI LLM adapter with strict contracts and safe fallback behavior.
+"""Groq LLM adapter with strict contracts and safe fallback behavior.
 
 Milestone-1 design goals:
 - Provide typed request/response contracts.
@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-import httpx
+from groq import Groq
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.evaluator import CorpusChunk
@@ -112,7 +112,7 @@ class LLMAdapterResult(BaseModel):
     remediation_hints: list[str] = Field(default_factory=list)
     evidence_chunk_ids: list[str] = Field(default_factory=list)
     summary: str
-    provider: str = "openai"
+    provider: str = "groq"
     model: str
     error_type: str | None = None
     diagnostic: str | None = None
@@ -130,8 +130,8 @@ class LLMAdapterResult(BaseModel):
 
 
 @dataclass(frozen=True)
-class OpenAIConfig:
-    """Runtime configuration for OpenAI adapter."""
+class GroqConfig:
+    """Runtime configuration for Groq adapter."""
 
     api_key: str
     model: str
@@ -141,29 +141,29 @@ class OpenAIConfig:
     backoff_seconds: float
 
 
-def load_openai_config() -> OpenAIConfig:
+def load_groq_config() -> GroqConfig:
     """Load and validate env-backed adapter configuration."""
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is required when LLM adapter is enabled")
+        raise RuntimeError("GROQ_API_KEY is required when LLM adapter is enabled")
 
-    model = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini").strip()
+    model = os.environ.get("COMPLIANCE_GROQ_MODEL", "llama-3.3-70b").strip()
     if not model:
-        raise RuntimeError("OPENAI_MODEL must be non-empty")
+        raise RuntimeError("COMPLIANCE_GROQ_MODEL must be non-empty")
 
-    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
-    timeout_seconds = float(os.environ.get("OPENAI_TIMEOUT_SECONDS", "8"))
-    max_retries = int(os.environ.get("OPENAI_MAX_RETRIES", "2"))
-    backoff_seconds = float(os.environ.get("OPENAI_BACKOFF_SECONDS", "0.2"))
+    base_url = os.environ.get("COMPLIANCE_GROQ_BASE_URL", "https://api.groq.com/openai/v1").strip().rstrip("/")
+    timeout_seconds = float(os.environ.get("COMPLIANCE_GROQ_TIMEOUT_SECONDS", "8"))
+    max_retries = int(os.environ.get("COMPLIANCE_GROQ_MAX_RETRIES", "2"))
+    backoff_seconds = float(os.environ.get("COMPLIANCE_GROQ_BACKOFF_SECONDS", "0.2"))
 
     if timeout_seconds <= 0:
-        raise RuntimeError("OPENAI_TIMEOUT_SECONDS must be > 0")
+        raise RuntimeError("COMPLIANCE_GROQ_TIMEOUT_SECONDS must be > 0")
     if max_retries < 0 or max_retries > 5:
-        raise RuntimeError("OPENAI_MAX_RETRIES must be between 0 and 5")
+        raise RuntimeError("COMPLIANCE_GROQ_MAX_RETRIES must be between 0 and 5")
     if backoff_seconds < 0:
-        raise RuntimeError("OPENAI_BACKOFF_SECONDS must be >= 0")
+        raise RuntimeError("COMPLIANCE_GROQ_BACKOFF_SECONDS must be >= 0")
 
-    return OpenAIConfig(
+    return GroqConfig(
         api_key=api_key,
         model=model,
         base_url=base_url,
@@ -209,11 +209,19 @@ def build_llm_prompt(request: LLMEvaluationRequest) -> str:
     )
 
 
+class InvalidLLMOutputError(RuntimeError):
+    """Raised when model output is missing/invalid JSON contract."""
+
+
 def _is_retryable_exception(exc: Exception) -> bool:
-    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+    if isinstance(exc, TimeoutError):
         return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code in TRANSIENT_STATUS_CODES
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code in TRANSIENT_STATUS_CODES
     return False
 
 
@@ -222,34 +230,26 @@ def parse_llm_json_output(raw_text: str) -> LLMEvaluationOutput:
     try:
         payload = json.loads(raw_text)
     except json.JSONDecodeError as exc:
-        raise RuntimeError("LLM response was not valid JSON") from exc
+        raise InvalidLLMOutputError("LLM response was not valid JSON") from exc
 
     try:
         return LLMEvaluationOutput.model_validate(payload)
     except ValidationError as exc:
-        raise RuntimeError(f"LLM response contract validation failed: {exc.errors(include_url=False)}") from exc
+        raise InvalidLLMOutputError(
+            f"LLM response contract validation failed: {exc.errors(include_url=False)}"
+        ) from exc
 
 
-def _extract_response_text(payload: dict[str, Any]) -> str:
-    """
-    Extract text from OpenAI-compatible response shape.
-
-    Supports:
-    - payload['output_text'] (simple mocked/normalized form)
-    - Responses API-like payload['output'][...]['content'][...]['text']
-    """
-    output_text = payload.get("output_text")
-    if isinstance(output_text, str) and output_text.strip():
-        return output_text
-
-    output = payload.get("output", [])
-    for item in output if isinstance(output, list) else []:
-        content_items = item.get("content", [])
-        for content in content_items if isinstance(content_items, list) else []:
-            text = content.get("text")
-            if isinstance(text, str) and text.strip():
-                return text
-    raise RuntimeError("LLM response did not include text output")
+def _extract_chat_completion_text(response: Any) -> str:
+    """Extract assistant text from Groq chat completion object."""
+    choices = getattr(response, "choices", None)
+    if not choices:
+        raise InvalidLLMOutputError("LLM response did not include choices")
+    message = getattr(choices[0], "message", None)
+    content = getattr(message, "content", None)
+    if isinstance(content, str) and content.strip():
+        return content
+    raise InvalidLLMOutputError("LLM response did not include text output")
 
 
 def fallback_llm_result(
@@ -268,7 +268,7 @@ def fallback_llm_result(
         remediation_hints=["Manual compliance review required due to LLM unavailability."],
         evidence_chunk_ids=[],
         summary="LLM unavailable; fallback applied for safety.",
-        provider="openai",
+        provider="groq",
         model=model,
         error_type=error_type,
         diagnostic=diagnostic,
@@ -278,15 +278,15 @@ def fallback_llm_result(
     )
 
 
-def evaluate_with_openai(
+def evaluate_with_groq(
     request: LLMEvaluationRequest,
     *,
-    config: OpenAIConfig | None = None,
+    config: GroqConfig | None = None,
     logger: Callable[[dict[str, Any]], None] | None = None,
-    client_factory: Callable[..., httpx.Client] = httpx.Client,
+    client_factory: Callable[..., Any] = Groq,
 ) -> LLMAdapterResult:
-    """Evaluate feature spec with OpenAI and return normalized adapter result."""
-    cfg = config or load_openai_config()
+    """Evaluate feature spec with Groq and return normalized adapter result."""
+    cfg = config or load_groq_config()
     prompt = build_llm_prompt(request)
     attempts = cfg.max_retries + 1
     started_at = time.perf_counter()
@@ -294,45 +294,54 @@ def evaluate_with_openai(
 
     for attempt in range(1, attempts + 1):
         try:
-            with client_factory(timeout=cfg.timeout_seconds) as client:
-                response = client.post(
-                    f"{cfg.base_url}/responses",
-                    headers={"Authorization": f"Bearer {cfg.api_key}"},
-                    json={
-                        "model": cfg.model,
-                        "input": prompt,
-                        "temperature": 0,
-                    },
-                )
-                response.raise_for_status()
-                raw_text = _extract_response_text(response.json())
-                parsed = parse_llm_json_output(raw_text)
-                latency_ms = int((time.perf_counter() - started_at) * 1000)
-
-                result = LLMAdapterResult(
-                    decision=parsed.decision,
-                    confidence=parsed.confidence,
-                    findings=parsed.findings,
-                    remediation_hints=parsed.remediation_hints,
-                    evidence_chunk_ids=parsed.evidence_chunk_ids,
-                    summary=parsed.summary,
-                    provider="openai",
+            parsed: LLMEvaluationOutput | None = None
+            for json_attempt in range(2):
+                client = client_factory(api_key=cfg.api_key, base_url=cfg.base_url, timeout=cfg.timeout_seconds)
+                response = client.chat.completions.create(
                     model=cfg.model,
-                    attempts=attempt,
-                    latency_ms=latency_ms,
+                    messages=[
+                        {"role": "system", "content": "Return strict JSON only."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0,
+                    response_format={"type": "json_object"},
                 )
-                if logger is not None:
-                    logger(
-                        {
-                            "event": "llm.success",
-                            "correlation_id": request.correlation_id,
-                            "provider": "openai",
-                            "model": cfg.model,
-                            "attempts": attempt,
-                            "latency_ms": latency_ms,
-                        }
-                    )
-                return result
+                try:
+                    raw_text = _extract_chat_completion_text(response)
+                    parsed = parse_llm_json_output(raw_text)
+                    break
+                except InvalidLLMOutputError as exc:
+                    last_exc = exc
+                    if json_attempt == 1:
+                        raise
+
+            if parsed is None:
+                raise InvalidLLMOutputError("LLM response did not produce valid JSON")
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
+            result = LLMAdapterResult(
+                decision=parsed.decision,
+                confidence=parsed.confidence,
+                findings=parsed.findings,
+                remediation_hints=parsed.remediation_hints,
+                evidence_chunk_ids=parsed.evidence_chunk_ids,
+                summary=parsed.summary,
+                provider="groq",
+                model=cfg.model,
+                attempts=attempt,
+                latency_ms=latency_ms,
+            )
+            if logger is not None:
+                logger(
+                    {
+                        "event": "llm.success",
+                        "correlation_id": request.correlation_id,
+                        "provider": "groq",
+                        "model": cfg.model,
+                        "attempts": attempt,
+                        "latency_ms": latency_ms,
+                    }
+                )
+            return result
         except Exception as exc:  # noqa: BLE001 - adapter handles all provider-level failures.
             last_exc = exc
             retryable = _is_retryable_exception(exc)
@@ -341,7 +350,7 @@ def evaluate_with_openai(
                     {
                         "event": "llm.failure",
                         "correlation_id": request.correlation_id,
-                        "provider": "openai",
+                            "provider": "groq",
                         "model": cfg.model,
                         "attempt": attempt,
                         "retryable": retryable,
@@ -355,11 +364,27 @@ def evaluate_with_openai(
                 time.sleep(cfg.backoff_seconds * attempt)
 
     latency_ms = int((time.perf_counter() - started_at) * 1000)
-    error_type = "provider_error" if isinstance(last_exc, httpx.HTTPError) else "invalid_output"
+    error_type = "invalid_output" if isinstance(last_exc, InvalidLLMOutputError) else "provider_error"
     return fallback_llm_result(
         model=cfg.model,
         attempts=attempts,
         error_type=error_type,
         diagnostic=str(last_exc)[:500] if last_exc is not None else "unknown",
         latency_ms=latency_ms,
+    )
+
+
+def evaluate_with_openai(
+    request: LLMEvaluationRequest,
+    *,
+    config: GroqConfig | None = None,
+    logger: Callable[[dict[str, Any]], None] | None = None,
+    client_factory: Callable[..., Any] = Groq,
+) -> LLMAdapterResult:
+    """Backward-compatible alias for older call sites/tests."""
+    return evaluate_with_groq(
+        request,
+        config=config,
+        logger=logger,
+        client_factory=client_factory,
     )

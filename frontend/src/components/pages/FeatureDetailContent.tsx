@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getFeatureById, getEvaluationsByFeature, getContributors } from "@/lib/mock";
+import { getContributors, getEvaluationsByFeature, getFeatureById } from "@/lib/data";
 import StatusBadge from "@/components/shared/StatusBadge";
 import RiskGauge from "@/components/shared/RiskGauge";
 import DataClassificationBadge from "@/components/shared/DataClassificationBadge";
@@ -13,10 +13,27 @@ import type { Evaluation } from "@/lib/types";
 import { formatDate, truncateSha, riskScoreColor } from "@/lib/utils";
 
 export default function FeatureDetailContent({ featureId }: { featureId: string }) {
-  const feature = getFeatureById(featureId);
-  const evaluations = getEvaluationsByFeature(featureId);
+  const [feature, setFeature] = useState<Awaited<ReturnType<typeof getFeatureById>>>();
+  const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
   const contributors = getContributors();
   const [expandedEval, setExpandedEval] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [nextFeature, nextEvaluations] = await Promise.all([
+        getFeatureById(featureId),
+        getEvaluationsByFeature(featureId),
+      ]);
+      if (!cancelled) {
+        setFeature(nextFeature);
+        setEvaluations(nextEvaluations);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [featureId]);
 
   if (!feature) {
     return (

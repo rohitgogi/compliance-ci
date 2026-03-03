@@ -1,65 +1,114 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getDashboardStats, getRiskDistribution, getRecentEvaluations, getRegressions, getFeatureById } from "@/lib/mock";
+import {
+  getAllFeatures,
+  getAllEvaluations,
+  getDashboardStats,
+  getRegressions,
+  getRiskDistribution,
+  type DashboardStats,
+} from "@/lib/data";
 import RiskDistributionChart from "@/components/charts/RiskDistributionChart";
 import GitBranchTimeline from "@/components/charts/GitBranchTimeline";
 import EvaluationTable from "@/components/tables/EvaluationTable";
 import StatusBadge from "@/components/shared/StatusBadge";
-import type { Decision } from "@/lib/types";
-
-const stats = getDashboardStats();
-const riskData = getRiskDistribution();
-const recentEvals = getRecentEvaluations(8);
-const regressions = getRegressions();
-
-const statCards = [
-  {
-    label: "Total Features",
-    value: stats.totalFeatures,
-    accent: "border-l-accent",
-    icon: (
-      <svg className="w-4 h-4 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" />
-      </svg>
-    ),
-  },
-  {
-    label: "Pass Rate",
-    value: `${stats.passRate}%`,
-    accent: "border-l-status-pass",
-    valueColor: "text-status-pass",
-    icon: (
-      <svg className="w-4 h-4 text-status-pass" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-      </svg>
-    ),
-  },
-  {
-    label: "Review Required",
-    value: stats.reviewCount,
-    accent: "border-l-status-review",
-    valueColor: "text-status-review",
-    icon: (
-      <svg className="w-4 h-4 text-status-review" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
-      </svg>
-    ),
-  },
-  {
-    label: "Failed",
-    value: stats.failCount,
-    accent: "border-l-status-fail",
-    valueColor: "text-status-fail",
-    icon: (
-      <svg className="w-4 h-4 text-status-fail" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-      </svg>
-    ),
-  },
-];
+import type { Decision, Evaluation, ReevaluationResult } from "@/lib/types";
 
 export default function OverviewContent() {
+  const [stats, setStats] = useState<DashboardStats>({
+    totalFeatures: 0,
+    passRate: 0,
+    reviewCount: 0,
+    failCount: 0,
+    passCount: 0,
+  });
+  const [riskData, setRiskData] = useState<{ bucket: string; count: number }[]>([
+    { bucket: "0-20", count: 0 },
+    { bucket: "21-40", count: 0 },
+    { bucket: "41-60", count: 0 },
+    { bucket: "61-80", count: 0 },
+    { bucket: "81-100", count: 0 },
+  ]);
+  const [recentEvals, setRecentEvals] = useState<Evaluation[]>([]);
+  const [allEvaluations, setAllEvaluations] = useState<Evaluation[]>([]);
+  const [regressions, setRegressions] = useState<ReevaluationResult[]>([]);
+  const [featureNameById, setFeatureNameById] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const [nextStats, nextRisk, nextEvaluations, nextRegressions, features] = await Promise.all([
+        getDashboardStats(),
+        getRiskDistribution(),
+        getAllEvaluations(),
+        getRegressions(),
+        getAllFeatures(),
+      ]);
+      if (cancelled) {
+        return;
+      }
+      setStats(nextStats);
+      setRiskData(nextRisk);
+      setAllEvaluations(nextEvaluations);
+      setRecentEvals(nextEvaluations.slice(0, 8));
+      setRegressions(nextRegressions);
+      setFeatureNameById(
+        Object.fromEntries(features.map((feature) => [feature.feature_id, feature.feature_name]))
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const statCards = [
+    {
+      label: "Total Features",
+      value: stats.totalFeatures,
+      accent: "border-l-accent",
+      icon: (
+        <svg className="w-4 h-4 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" />
+        </svg>
+      ),
+    },
+    {
+      label: "Pass Rate",
+      value: `${stats.passRate}%`,
+      accent: "border-l-status-pass",
+      valueColor: "text-status-pass",
+      icon: (
+        <svg className="w-4 h-4 text-status-pass" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+        </svg>
+      ),
+    },
+    {
+      label: "Review Required",
+      value: stats.reviewCount,
+      accent: "border-l-status-review",
+      valueColor: "text-status-review",
+      icon: (
+        <svg className="w-4 h-4 text-status-review" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+        </svg>
+      ),
+    },
+    {
+      label: "Failed",
+      value: stats.failCount,
+      accent: "border-l-status-fail",
+      valueColor: "text-status-fail",
+      icon: (
+        <svg className="w-4 h-4 text-status-fail" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+        </svg>
+      ),
+    },
+  ];
+
   return (
     <div className="space-y-5 max-w-[1200px] animate-fade-in">
       <div>
@@ -100,7 +149,7 @@ export default function OverviewContent() {
             <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-status-fail" /> Fail</span>
           </div>
         </div>
-        <GitBranchTimeline />
+        <GitBranchTimeline evaluations={allEvaluations} />
       </div>
 
       {/* Regression Alerts */}
@@ -120,7 +169,6 @@ export default function OverviewContent() {
           </div>
           <div className="space-y-1">
             {regressions.map((r) => {
-              const feature = getFeatureById(r.feature_id);
               return (
                 <Link
                   key={`${r.job_id}-${r.feature_id}`}
@@ -128,7 +176,7 @@ export default function OverviewContent() {
                   className="flex items-center gap-3 px-3 py-2 -mx-1 rounded-lg text-[12px] hover:bg-status-fail-dim transition-colors"
                 >
                   <span className="font-medium text-text-light-primary dark:text-text-primary min-w-[140px]">
-                    {feature?.feature_name ?? r.feature_id}
+                    {featureNameById[r.feature_id] ?? r.feature_id}
                   </span>
                   <StatusBadge decision={r.previous_decision as Decision} size="sm" />
                   <svg className="w-3 h-3 text-text-light-muted dark:text-text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

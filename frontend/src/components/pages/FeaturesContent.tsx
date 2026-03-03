@@ -1,14 +1,20 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getFeaturesWithLatestDecision } from "@/lib/mock";
+import { getFeaturesWithLatestDecision } from "@/lib/data";
 import StatusBadge from "@/components/shared/StatusBadge";
 import DataClassificationBadge from "@/components/shared/DataClassificationBadge";
 import JurisdictionTags from "@/components/shared/JurisdictionTags";
 import { formatDate, riskScoreColor } from "@/lib/utils";
-import type { Decision } from "@/lib/types";
+import type { Decision, FeatureSpec } from "@/lib/types";
 
-const features = getFeaturesWithLatestDecision();
+type FeatureWithLatestDecision = FeatureSpec & {
+  latest_decision?: Decision;
+  latest_risk_score?: number;
+  latest_evaluated_at?: string;
+  latest_corpus_version?: string;
+};
 
 const borderColor: Record<Decision, string> = {
   PASS: "border-l-status-pass",
@@ -23,6 +29,21 @@ const barColor: Record<Decision, string> = {
 };
 
 export default function FeaturesContent() {
+  const [features, setFeatures] = useState<FeatureWithLatestDecision[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const next = await getFeaturesWithLatestDecision();
+      if (!cancelled) {
+        setFeatures(next);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <div className="space-y-6 max-w-[1200px] animate-fade-in">
       <div>

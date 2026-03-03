@@ -102,6 +102,16 @@ class ComplianceStore:
                     released_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS corpus_chunks (
+                    version_id TEXT NOT NULL,
+                    chunk_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    tags TEXT NOT NULL,
+                    PRIMARY KEY (version_id, chunk_id),
+                    FOREIGN KEY (version_id) REFERENCES corpus_versions(version_id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS reevaluation_jobs (
                     job_id TEXT PRIMARY KEY,
                     target_corpus_version TEXT NOT NULL,
@@ -338,6 +348,91 @@ class ComplianceStore:
         evaluations = self.get_evaluations(feature_id)
         return evaluations[0] if evaluations else None
 
+    def list_evaluations(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        feature_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List evaluations globally, newest first, with optional feature filter."""
+        safe_limit = max(1, min(limit, 1000))
+        safe_offset = max(0, offset)
+        query = """
+            SELECT feature_id, spec_version, corpus_version, risk_score, decision, evidence_chunk_ids,
+                   reasoning_summary, commit_sha, evaluated_at, deterministic_confidence,
+                   llm_decision, llm_confidence, llm_fallback, llm_error_type, llm_model,
+                   llm_attempts, fused_confidence, fused_reason_codes, fused_explanation,
+                   remediation_hints
+            FROM evaluations
+        """
+        params: tuple[Any, ...]
+        if feature_id is not None:
+            query += " WHERE feature_id = ?"
+            params = (feature_id, safe_limit, safe_offset)
+            query += " ORDER BY evaluated_at DESC, id DESC LIMIT ? OFFSET ?"
+        else:
+            params = (safe_limit, safe_offset)
+            query += " ORDER BY evaluated_at DESC, id DESC LIMIT ? OFFSET ?"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [
+                {
+                    "feature_id": row["feature_id"],
+                    "spec_version": row["spec_version"],
+                    "corpus_version": row["corpus_version"],
+                    "risk_score": int(row["risk_score"]),
+                    "decision": row["decision"],
+                    "evidence_chunk_ids": json.loads(row["evidence_chunk_ids"]),
+                    "reasoning_summary": row["reasoning_summary"],
+                    "commit_sha": row["commit_sha"],
+                    "evaluated_at": row["evaluated_at"],
+                    "deterministic_confidence": row["deterministic_confidence"],
+                    "llm_decision": row["llm_decision"],
+                    "llm_confidence": row["llm_confidence"],
+                    "llm_fallback": bool(row["llm_fallback"]) if row["llm_fallback"] is not None else None,
+                    "llm_error_type": row["llm_error_type"],
+                    "llm_model": row["llm_model"],
+                    "llm_attempts": row["llm_attempts"],
+                    "fused_confidence": row["fused_confidence"],
+                    "fused_reason_codes": json.loads(row["fused_reason_codes"] or "[]"),
+                    "fused_explanation": row["fused_explanation"],
+                    "remediation_hints": json.loads(row["remediation_hints"] or "[]"),
+                }
+                for row in rows
+            ]
+
+    def list_active_features_with_latest(self) -> list[dict[str, Any]]:
+        """List active features merged with latest evaluation metadata."""
+        feature_ids = self.list_active_feature_ids()
+        merged: list[dict[str, Any]] = []
+        for feature_id in feature_ids:
+            spec = self.get_latest_feature_spec(feature_id)
+            if spec is None:
+                continue
+            payload = spec["parsed_payload"]
+            latest_eval = self.get_latest_evaluation(feature_id)
+            merged.append(
+                {
+                    "feature_id": payload.get("feature_id", feature_id),
+                    "feature_name": payload.get("feature_name", feature_id),
+                    "owner_team": payload.get("owner_team", "unknown"),
+                    "data_classification": payload.get("data_classification", "internal"),
+                    "jurisdictions": payload.get("jurisdictions", []),
+                    "controls": payload.get("controls", []),
+                    "change_summary": payload.get("change_summary", ""),
+                    "spec_version": spec["spec_version"],
+                    "active": spec["active"],
+                    "created_at": spec["created_at"],
+                    "path": spec["path"],
+                    "latest_decision": latest_eval["decision"] if latest_eval else None,
+                    "latest_risk_score": latest_eval["risk_score"] if latest_eval else None,
+                    "latest_evaluated_at": latest_eval["evaluated_at"] if latest_eval else None,
+                    "latest_corpus_version": latest_eval["corpus_version"] if latest_eval else None,
+                }
+            )
+        return merged
+
     def list_evaluations_by_reason_code(self, reason_code: str) -> list[dict[str, Any]]:
         """Return evaluations that include a given fused reason code."""
         with self._connect() as conn:
@@ -379,6 +474,116 @@ class ComplianceStore:
                 """,
                 (version_id, source_set, now),
             )
+
+    def upsert_corpus_version_with_chunks(
+        self,
+        *,
+        version_id: str,
+        source_set: str,
+        chunks: list[dict[str, Any]],
+    ) -> None:
+        """
+        Register corpus version and upsert all chunks. Replaces existing chunks for
+        this version. Each chunk must have chunk_id, title, text, tags.
+        """
+        now = utc_now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO corpus_versions (version_id, source_set, released_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(version_id)
+                DO UPDATE SET
+                    source_set = excluded.source_set
+                """,
+                (version_id, source_set, now),
+            )
+            conn.execute("DELETE FROM corpus_chunks WHERE version_id = ?", (version_id,))
+            for ch in chunks:
+                chunk_id = str(ch.get("chunk_id", "")).strip()
+                title = str(ch.get("title", "")).strip()
+                text = str(ch.get("text", "")).strip()
+                tags_raw = ch.get("tags", [])
+                tags_json = json.dumps(
+                    [str(t).strip() for t in (tags_raw if isinstance(tags_raw, list) else [])],
+                    sort_keys=True,
+                )
+                if not chunk_id:
+                    raise ValueError("chunk_id is required and must be non-empty")
+                conn.execute(
+                    """
+                    INSERT INTO corpus_chunks (version_id, chunk_id, title, text, tags)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (version_id, chunk_id, title, text, tags_json),
+                )
+
+    def get_corpus_chunks(self, version_id: str) -> list[dict[str, Any]]:
+        """Return all chunks for a corpus version, or empty list if none."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT chunk_id, title, text, tags
+                FROM corpus_chunks
+                WHERE version_id = ?
+                ORDER BY chunk_id
+                """,
+                (version_id,),
+            ).fetchall()
+            return [
+                {
+                    "chunk_id": row["chunk_id"],
+                    "title": row["title"],
+                    "text": row["text"],
+                    "tags": json.loads(row["tags"] or "[]"),
+                }
+                for row in rows
+            ]
+
+    def get_latest_corpus_version_with_chunks(
+        self, limit_versions: int = 50
+    ) -> tuple[str, list[dict[str, Any]]] | None:
+        """
+        Return (version_id, chunks) for the most recent corpus version that has
+        uploaded chunks. Returns None if no version has chunks.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT version_id FROM corpus_versions
+                ORDER BY released_at DESC
+                LIMIT ?
+                """,
+                (limit_versions,),
+            ).fetchall()
+        for row in rows:
+            version_id = str(row["version_id"])
+            chunks = self.get_corpus_chunks(version_id)
+            if chunks:
+                return (version_id, chunks)
+        return None
+
+    def list_corpus_versions(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Return corpus versions ordered newest first."""
+        safe_limit = max(1, min(limit, 1000))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT version_id, source_set, released_at
+                FROM corpus_versions
+                ORDER BY released_at DESC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ).fetchall()
+            return [
+                {
+                    "version_id": row["version_id"],
+                    "source_set": row["source_set"],
+                    "released_at": row["released_at"],
+                }
+                for row in rows
+            ]
 
     def get_corpus_version(self, version_id: str) -> dict[str, Any] | None:
         """Return corpus version metadata by ID."""
@@ -540,6 +745,40 @@ class ComplianceStore:
                 """,
                 (job_id,),
             ).fetchall()
+            return [
+                {
+                    "job_id": row["job_id"],
+                    "feature_id": row["feature_id"],
+                    "previous_decision": row["previous_decision"],
+                    "new_decision": row["new_decision"],
+                    "regressed": bool(row["regressed"]),
+                    "details": json.loads(row["details"]),
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ]
+
+    def list_reevaluation_results_all(
+        self,
+        *,
+        regressed_only: bool = False,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """List reevaluation results globally, optionally regressed-only."""
+        safe_limit = max(1, min(limit, 1000))
+        query = """
+            SELECT job_id, feature_id, previous_decision, new_decision, regressed, details, created_at
+            FROM reevaluation_results
+        """
+        params: tuple[Any, ...]
+        if regressed_only:
+            query += " WHERE regressed = 1"
+            params = (safe_limit,)
+        else:
+            params = (safe_limit,)
+        query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
             return [
                 {
                     "job_id": row["job_id"],

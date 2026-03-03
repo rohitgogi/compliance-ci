@@ -1,18 +1,30 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import { getAllEvaluations } from "@/lib/mock";
+import { useEffect, useMemo, useState } from "react";
+import { getAllEvaluations } from "@/lib/data";
 import EvaluationTable from "@/components/tables/EvaluationTable";
-import type { Decision } from "@/lib/types";
-
-const allEvaluations = getAllEvaluations();
+import type { Decision, Evaluation } from "@/lib/types";
 
 type SortField = "evaluated_at" | "risk_score" | "feature_id" | "decision";
 type SortDir = "asc" | "desc";
 
 export default function EvaluationsContent() {
+  const [allEvaluations, setAllEvaluations] = useState<Evaluation[]>([]);
   const [sortField, setSortField] = useState<SortField>("evaluated_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const next = await getAllEvaluations();
+      if (!cancelled) {
+        setAllEvaluations(next);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const sorted = useMemo(() => {
     return [...allEvaluations].sort((a, b) => {
@@ -35,7 +47,7 @@ export default function EvaluationsContent() {
       }
       return sortDir === "desc" ? -cmp : cmp;
     });
-  }, [sortField, sortDir]);
+  }, [allEvaluations, sortField, sortDir]);
 
   const toggleSort = (field: SortField) => {
     if (sortField === field) {

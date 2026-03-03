@@ -1,0 +1,27 @@
+# Example corpus file for upload. Copy and customize for your regulations.
+# Upload via the Corpus tab in the UI.
+#
+# Required fields:
+#   version_id: unique identifier (e.g. v2, my-corpus-2025)
+#   source_set: human-readable description
+#   chunks: list of regulation chunks
+#
+# Each chunk needs: chunk_id, title, text, tags
+version_id: v2
+source_set: "Sample uploaded corpus"
+
+chunks:
+  - chunk_id: REG-US-KYC-001
+    title: KYC baseline requirements
+    text: US fintech flows must verify user identity before enabling fund movement.
+    tags: [US, KYC, IDENTITY]
+
+  - chunk_id: REG-EU-GDPR-010
+    title: GDPR data minimization and lawful basis
+    text: EU user data processing requires lawful basis, minimization, and retention controls.
+    tags: [EU, GDPR, DATA]
+
+  - chunk_id: REG-GEN-AUDIT-002
+    title: Audit logging and traceability
+    text: Compliance-sensitive operations must generate tamper-evident audit trails.
+    tags: [AUDIT, TRACEABILITY]
