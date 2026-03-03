@@ -1,0 +1,74 @@
+[
+  {
+    "job_id": "reeval-reg-2026-q1-r2",
+    "feature_id": "margin-trading",
+    "previous_decision": "REVIEW_REQUIRED",
+    "new_decision": "FAIL",
+    "regressed": true,
+    "details": {
+      "risk_score": 72,
+      "target_decision": "FAIL"
+    },
+    "created_at": "2026-02-28T15:00:00+00:00"
+  },
+  {
+    "job_id": "reeval-reg-2026-q1-r2",
+    "feature_id": "kyc-onboarding",
+    "previous_decision": "PASS",
+    "new_decision": "PASS",
+    "regressed": false,
+    "details": {
+      "risk_score": 28,
+      "target_decision": "PASS"
+    },
+    "created_at": "2026-02-28T15:01:00+00:00"
+  },
+  {
+    "job_id": "reeval-reg-2026-q1-r2",
+    "feature_id": "payment-processing",
+    "previous_decision": "PASS",
+    "new_decision": "REVIEW_REQUIRED",
+    "regressed": true,
+    "details": {
+      "risk_score": 55,
+      "target_decision": "REVIEW_REQUIRED"
+    },
+    "created_at": "2026-02-28T15:02:00+00:00"
+  },
+  {
+    "job_id": "reeval-reg-2026-q1-r2",
+    "feature_id": "aml-monitoring",
+    "previous_decision": "REVIEW_REQUIRED",
+    "new_decision": "REVIEW_REQUIRED",
+    "regressed": false,
+    "details": {
+      "risk_score": 62,
+      "target_decision": "REVIEW_REQUIRED"
+    },
+    "created_at": "2026-02-28T15:03:00+00:00"
+  },
+  {
+    "job_id": "reeval-reg-2026-q1-r2",
+    "feature_id": "data-export",
+    "previous_decision": "PASS",
+    "new_decision": "PASS",
+    "regressed": false,
+    "details": {
+      "risk_score": 15,
+      "target_decision": "PASS"
+    },
+    "created_at": "2026-02-28T15:04:00+00:00"
+  },
+  {
+    "job_id": "reeval-reg-2026-q1-r2",
+    "feature_id": "lending-engine",
+    "previous_decision": "PASS",
+    "new_decision": "REVIEW_REQUIRED",
+    "regressed": true,
+    "details": {
+      "risk_score": 48,
+      "target_decision": "REVIEW_REQUIRED"
+    },
+    "created_at": "2026-02-28T15:05:00+00:00"
+  }
+]

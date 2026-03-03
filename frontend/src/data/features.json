@@ -1,0 +1,105 @@
+[
+  {
+    "feature_id": "margin-trading",
+    "feature_name": "Margin Trading Engine",
+    "owner_team": "Trading Platform",
+    "data_classification": "restricted",
+    "jurisdictions": ["US", "EU", "UK"],
+    "controls": [
+      { "id": "ctrl-mt-001", "description": "Leverage limit enforcement per jurisdiction", "status": "verified" },
+      { "id": "ctrl-mt-002", "description": "Real-time margin call trigger at 80% utilization", "status": "implemented" },
+      { "id": "ctrl-mt-003", "description": "Cross-border position netting restrictions", "status": "planned" },
+      { "id": "ctrl-mt-004", "description": "Client suitability assessment before onboarding", "status": "verified" }
+    ],
+    "change_summary": "Updated leverage cap from 5x to 10x for professional-grade accounts in EU jurisdictions following MiFID II amendment.",
+    "spec_version": "v3",
+    "active": true,
+    "created_at": "2026-02-28T14:30:00+00:00",
+    "path": "backend/features/margin-trading.yml"
+  },
+  {
+    "feature_id": "kyc-onboarding",
+    "feature_name": "KYC Onboarding Flow",
+    "owner_team": "Identity & Compliance",
+    "data_classification": "confidential",
+    "jurisdictions": ["US", "EU", "SG", "UK"],
+    "controls": [
+      { "id": "ctrl-kyc-001", "description": "Document verification via certified provider", "status": "verified" },
+      { "id": "ctrl-kyc-002", "description": "PEP and sanctions screening on every submission", "status": "verified" },
+      { "id": "ctrl-kyc-003", "description": "Ongoing monitoring with 90-day refresh cycle", "status": "implemented" }
+    ],
+    "change_summary": "Added biometric liveness check for SG jurisdiction per MAS Notice 626 requirements.",
+    "spec_version": "v2",
+    "active": true,
+    "created_at": "2026-02-25T09:15:00+00:00",
+    "path": "backend/features/kyc-onboarding.yml"
+  },
+  {
+    "feature_id": "payment-processing",
+    "feature_name": "Payment Processing Gateway",
+    "owner_team": "Payments",
+    "data_classification": "restricted",
+    "jurisdictions": ["US", "EU"],
+    "controls": [
+      { "id": "ctrl-pay-001", "description": "PCI-DSS compliant tokenization of card data", "status": "verified" },
+      { "id": "ctrl-pay-002", "description": "Transaction velocity limits per account tier", "status": "verified" },
+      { "id": "ctrl-pay-003", "description": "Suspicious transaction flagging via rule engine", "status": "implemented" },
+      { "id": "ctrl-pay-004", "description": "Settlement reconciliation within T+1", "status": "verified" }
+    ],
+    "change_summary": "Increased daily transaction limit for verified business accounts from $50k to $250k.",
+    "spec_version": "v4",
+    "active": true,
+    "created_at": "2026-02-20T11:00:00+00:00",
+    "path": "backend/features/payment-processing.yml"
+  },
+  {
+    "feature_id": "aml-monitoring",
+    "feature_name": "AML Transaction Monitoring",
+    "owner_team": "Financial Crime",
+    "data_classification": "confidential",
+    "jurisdictions": ["US", "EU", "UK", "SG", "HK"],
+    "controls": [
+      { "id": "ctrl-aml-001", "description": "Real-time screening against OFAC/EU consolidated lists", "status": "verified" },
+      { "id": "ctrl-aml-002", "description": "ML-based anomaly detection on transaction patterns", "status": "implemented" },
+      { "id": "ctrl-aml-003", "description": "SAR filing automation with 24-hour SLA", "status": "planned" }
+    ],
+    "change_summary": "Lowered structuring detection threshold from $10k to $5k for HK jurisdiction per HKMA guidance.",
+    "spec_version": "v2",
+    "active": true,
+    "created_at": "2026-02-18T16:45:00+00:00",
+    "path": "backend/features/aml-monitoring.yml"
+  },
+  {
+    "feature_id": "data-export",
+    "feature_name": "Regulatory Data Export",
+    "owner_team": "Data Engineering",
+    "data_classification": "internal",
+    "jurisdictions": ["US", "EU"],
+    "controls": [
+      { "id": "ctrl-dex-001", "description": "Data masking for PII fields in exports", "status": "verified" },
+      { "id": "ctrl-dex-002", "description": "Encryption at rest and in transit for all export payloads", "status": "verified" }
+    ],
+    "change_summary": "Added GDPR Article 17 right-to-erasure support for EU user export requests.",
+    "spec_version": "v1",
+    "active": true,
+    "created_at": "2026-02-15T08:30:00+00:00",
+    "path": "backend/features/data-export.yml"
+  },
+  {
+    "feature_id": "lending-engine",
+    "feature_name": "Lending Underwriting Engine",
+    "owner_team": "Credit Risk",
+    "data_classification": "restricted",
+    "jurisdictions": ["US"],
+    "controls": [
+      { "id": "ctrl-len-001", "description": "Fair lending model bias testing per ECOA", "status": "implemented" },
+      { "id": "ctrl-len-002", "description": "Adverse action notice generation within 30 days", "status": "verified" },
+      { "id": "ctrl-len-003", "description": "Rate cap enforcement per state usury laws", "status": "verified" }
+    ],
+    "change_summary": "Integrated new credit scoring model v2 with updated FICO weighting factors.",
+    "spec_version": "v3",
+    "active": true,
+    "created_at": "2026-02-10T13:20:00+00:00",
+    "path": "backend/features/lending-engine.yml"
+  }
+]

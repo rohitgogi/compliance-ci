@@ -1,0 +1,233 @@
+[
+  {
+    "feature_id": "margin-trading",
+    "spec_version": "v3",
+    "corpus_version": "reg-2026-q1-r2",
+    "risk_score": 72,
+    "decision": "FAIL",
+    "evidence_chunk_ids": ["mifid-ii-art-25", "esma-leverage-2024", "emir-margin-req"],
+    "reasoning_summary": "Leverage increase to 10x exceeds ESMA intervention threshold for retail clients. Professional classification alone does not exempt from Art. 25 suitability requirements when leverage exceeds 5x.",
+    "commit_sha": "a1b2c3d",
+    "evaluated_at": "2026-02-28T14:35:00+00:00",
+    "pr_number": 147,
+    "lines_added": 42,
+    "lines_deleted": 18,
+    "modified_files": [
+      { "path": "backend/features/margin-trading.yml", "additions": 12, "deletions": 8 },
+      { "path": "backend/app/evaluator.py", "additions": 30, "deletions": 10 }
+    ],
+    "field_diffs": [
+      { "field": "leverage_cap", "old_value": "5x", "new_value": "10x" },
+      { "field": "account_tier", "old_value": "all", "new_value": "professional" }
+    ]
+  },
+  {
+    "feature_id": "margin-trading",
+    "spec_version": "v2",
+    "corpus_version": "reg-2026-q1-r1",
+    "risk_score": 45,
+    "decision": "REVIEW_REQUIRED",
+    "evidence_chunk_ids": ["mifid-ii-art-25", "esma-leverage-2024"],
+    "reasoning_summary": "Margin trading feature within acceptable bounds but requires review of cross-border netting implementation timeline.",
+    "commit_sha": "e4f5g6h",
+    "evaluated_at": "2026-02-20T10:15:00+00:00",
+    "pr_number": 132,
+    "lines_added": 28,
+    "lines_deleted": 5,
+    "modified_files": [
+      { "path": "backend/features/margin-trading.yml", "additions": 28, "deletions": 5 }
+    ],
+    "field_diffs": []
+  },
+  {
+    "feature_id": "margin-trading",
+    "spec_version": "v1",
+    "corpus_version": "reg-2025-q4-r3",
+    "risk_score": 22,
+    "decision": "PASS",
+    "evidence_chunk_ids": ["mifid-ii-art-25"],
+    "reasoning_summary": "Initial margin trading spec with conservative 2x leverage is well within all jurisdictional limits.",
+    "commit_sha": "i7j8k9l",
+    "evaluated_at": "2026-01-15T08:00:00+00:00",
+    "pr_number": 98,
+    "lines_added": 65,
+    "lines_deleted": 0,
+    "modified_files": [
+      { "path": "backend/features/margin-trading.yml", "additions": 65, "deletions": 0 }
+    ],
+    "field_diffs": []
+  },
+  {
+    "feature_id": "kyc-onboarding",
+    "spec_version": "v2",
+    "corpus_version": "reg-2026-q1-r2",
+    "risk_score": 28,
+    "decision": "PASS",
+    "evidence_chunk_ids": ["mas-notice-626", "sg-psa-2019"],
+    "reasoning_summary": "Biometric liveness check addition meets MAS Notice 626 enhanced CDD requirements. All controls are adequately mapped.",
+    "commit_sha": "m1n2o3p",
+    "evaluated_at": "2026-02-25T09:20:00+00:00",
+    "pr_number": 140,
+    "lines_added": 15,
+    "lines_deleted": 3,
+    "modified_files": [
+      { "path": "backend/features/kyc-onboarding.yml", "additions": 15, "deletions": 3 }
+    ],
+    "field_diffs": [
+      { "field": "biometric_check", "old_value": "none", "new_value": "liveness_required" }
+    ]
+  },
+  {
+    "feature_id": "kyc-onboarding",
+    "spec_version": "v1",
+    "corpus_version": "reg-2025-q4-r3",
+    "risk_score": 18,
+    "decision": "PASS",
+    "evidence_chunk_ids": ["mas-notice-626"],
+    "reasoning_summary": "KYC onboarding flow meets baseline CDD requirements across all declared jurisdictions.",
+    "commit_sha": "q4r5s6t",
+    "evaluated_at": "2026-01-10T14:00:00+00:00",
+    "pr_number": 85,
+    "lines_added": 48,
+    "lines_deleted": 0,
+    "modified_files": [
+      { "path": "backend/features/kyc-onboarding.yml", "additions": 48, "deletions": 0 }
+    ],
+    "field_diffs": []
+  },
+  {
+    "feature_id": "payment-processing",
+    "spec_version": "v4",
+    "corpus_version": "reg-2026-q1-r2",
+    "risk_score": 55,
+    "decision": "REVIEW_REQUIRED",
+    "evidence_chunk_ids": ["pci-dss-v4", "psd2-sca-rts", "aml-directive-6"],
+    "reasoning_summary": "Transaction limit increase to $250k triggers enhanced due diligence requirements under 6AMLD. Velocity controls need proportional adjustment.",
+    "commit_sha": "u7v8w9x",
+    "evaluated_at": "2026-02-20T11:10:00+00:00",
+    "pr_number": 133,
+    "lines_added": 22,
+    "lines_deleted": 8,
+    "modified_files": [
+      { "path": "backend/features/payment-processing.yml", "additions": 14, "deletions": 5 },
+      { "path": "backend/app/payment_limits.py", "additions": 8, "deletions": 3 }
+    ],
+    "field_diffs": [
+      { "field": "daily_limit_usd", "old_value": "50000", "new_value": "250000" }
+    ]
+  },
+  {
+    "feature_id": "payment-processing",
+    "spec_version": "v3",
+    "corpus_version": "reg-2025-q4-r3",
+    "risk_score": 25,
+    "decision": "PASS",
+    "evidence_chunk_ids": ["pci-dss-v4", "psd2-sca-rts"],
+    "reasoning_summary": "Payment processing gateway maintains PCI-DSS compliance with proper tokenization and SCA implementation.",
+    "commit_sha": "y1z2a3b",
+    "evaluated_at": "2026-01-22T09:45:00+00:00",
+    "pr_number": 110,
+    "lines_added": 10,
+    "lines_deleted": 4,
+    "modified_files": [
+      { "path": "backend/features/payment-processing.yml", "additions": 10, "deletions": 4 }
+    ],
+    "field_diffs": []
+  },
+  {
+    "feature_id": "aml-monitoring",
+    "spec_version": "v2",
+    "corpus_version": "reg-2026-q1-r2",
+    "risk_score": 62,
+    "decision": "REVIEW_REQUIRED",
+    "evidence_chunk_ids": ["hkma-aml-2025", "fatf-rec-20", "aml-directive-6"],
+    "reasoning_summary": "Lowered structuring threshold aligns with HKMA guidance but SAR filing automation (ctrl-aml-003) is still in planned state. Must be implemented before go-live.",
+    "commit_sha": "c4d5e6f",
+    "evaluated_at": "2026-02-18T17:00:00+00:00",
+    "pr_number": 128,
+    "lines_added": 18,
+    "lines_deleted": 6,
+    "modified_files": [
+      { "path": "backend/features/aml-monitoring.yml", "additions": 18, "deletions": 6 }
+    ],
+    "field_diffs": [
+      { "field": "structuring_threshold_hk", "old_value": "10000", "new_value": "5000" }
+    ]
+  },
+  {
+    "feature_id": "aml-monitoring",
+    "spec_version": "v1",
+    "corpus_version": "reg-2025-q4-r3",
+    "risk_score": 35,
+    "decision": "REVIEW_REQUIRED",
+    "evidence_chunk_ids": ["fatf-rec-20"],
+    "reasoning_summary": "AML monitoring framework is sound but ML anomaly detection model needs validation report before verification.",
+    "commit_sha": "g7h8i9j",
+    "evaluated_at": "2026-01-05T11:30:00+00:00",
+    "pr_number": 72,
+    "lines_added": 55,
+    "lines_deleted": 0,
+    "modified_files": [
+      { "path": "backend/features/aml-monitoring.yml", "additions": 55, "deletions": 0 }
+    ],
+    "field_diffs": []
+  },
+  {
+    "feature_id": "data-export",
+    "spec_version": "v1",
+    "corpus_version": "reg-2026-q1-r2",
+    "risk_score": 15,
+    "decision": "PASS",
+    "evidence_chunk_ids": ["gdpr-art-17", "gdpr-art-20"],
+    "reasoning_summary": "Data export feature with right-to-erasure support fully compliant. PII masking and encryption controls verified.",
+    "commit_sha": "k1l2m3n",
+    "evaluated_at": "2026-02-15T08:40:00+00:00",
+    "pr_number": 120,
+    "lines_added": 35,
+    "lines_deleted": 0,
+    "modified_files": [
+      { "path": "backend/features/data-export.yml", "additions": 35, "deletions": 0 }
+    ],
+    "field_diffs": []
+  },
+  {
+    "feature_id": "lending-engine",
+    "spec_version": "v3",
+    "corpus_version": "reg-2026-q1-r2",
+    "risk_score": 48,
+    "decision": "REVIEW_REQUIRED",
+    "evidence_chunk_ids": ["ecoa-reg-b", "tila-reg-z", "cfpb-ml-guidance"],
+    "reasoning_summary": "New credit scoring model introduces potential disparate impact risk. Fair lending bias testing (ctrl-len-001) must be completed and verified before deployment.",
+    "commit_sha": "o4p5q6r",
+    "evaluated_at": "2026-02-10T13:30:00+00:00",
+    "pr_number": 115,
+    "lines_added": 25,
+    "lines_deleted": 12,
+    "modified_files": [
+      { "path": "backend/features/lending-engine.yml", "additions": 15, "deletions": 8 },
+      { "path": "backend/app/credit_model.py", "additions": 10, "deletions": 4 }
+    ],
+    "field_diffs": [
+      { "field": "scoring_model", "old_value": "v1", "new_value": "v2" },
+      { "field": "fico_weight", "old_value": "0.65", "new_value": "0.55" }
+    ]
+  },
+  {
+    "feature_id": "lending-engine",
+    "spec_version": "v2",
+    "corpus_version": "reg-2025-q4-r3",
+    "risk_score": 20,
+    "decision": "PASS",
+    "evidence_chunk_ids": ["ecoa-reg-b", "tila-reg-z"],
+    "reasoning_summary": "Lending engine with established scoring model passes all fair lending and disclosure requirements.",
+    "commit_sha": "s7t8u9v",
+    "evaluated_at": "2026-01-18T10:00:00+00:00",
+    "pr_number": 95,
+    "lines_added": 8,
+    "lines_deleted": 2,
+    "modified_files": [
+      { "path": "backend/features/lending-engine.yml", "additions": 8, "deletions": 2 }
+    ],
+    "field_diffs": []
+  }
+]
