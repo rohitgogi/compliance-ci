@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.ci import determine_pr_gate, render_pr_comment
@@ -15,6 +16,7 @@ from app.evaluator import evaluate_feature_spec, retrieve_relevant_chunks
 from app.fusion import FusionInput, fuse_decision
 from app.llm_adapter import LLMEvaluationRequest, evaluate_with_openai
 from app.parser import SpecValidationError, parse_feature_spec_yaml
+from app.rate_limiter import SlidingWindowRateLimiter
 from app.storage import ComplianceStore, EvaluationRecord
 
 app = FastAPI(title="Compliance CI Backend", version="0.1.0")
@@ -24,6 +26,19 @@ app = FastAPI(title="Compliance CI Backend", version="0.1.0")
 def _get_store() -> ComplianceStore:
     db_path = Path(os.environ.get("COMPLIANCE_DB_PATH", "data/compliance.db"))
     return ComplianceStore(db_path)
+
+
+@lru_cache(maxsize=1)
+def _get_rate_limiter() -> SlidingWindowRateLimiter | None:
+    """
+    Build endpoint rate limiter from env.
+
+    COMPLIANCE_RATE_LIMIT_PER_MINUTE <= 0 disables in-process limiting.
+    """
+    limit = int(os.environ.get("COMPLIANCE_RATE_LIMIT_PER_MINUTE", "120"))
+    if limit <= 0:
+        return None
+    return SlidingWindowRateLimiter(max_requests=limit, window_seconds=60)
 
 
 class ChangedSpecInput(BaseModel):
@@ -58,21 +73,80 @@ class EvaluatePRRequest(BaseModel):
     commit_sha: str = Field(min_length=7, max_length=64)
     specs: list[ChangedSpecInput] = Field(min_length=1, max_length=200)
 
+    @field_validator("repo")
+    @classmethod
+    def validate_repo(cls, value: str) -> str:
+        normalized = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", normalized):
+            raise ValueError("repo must match owner/repository format")
+        return normalized
+
+    @field_validator("commit_sha")
+    @classmethod
+    def validate_commit_sha(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{7,64}", normalized):
+            raise ValueError("commit_sha must be a 7-64 char hexadecimal string")
+        return normalized
+
+
+class LLMObservation(BaseModel):
+    """Observed LLM metadata included in API output."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    summary: str | None = Field(default=None, max_length=5000)
+    fallback: bool
+    error_type: str | None = Field(default=None, max_length=128)
+    attempts: int = Field(ge=1, le=10)
+
+    @field_validator("decision")
+    @classmethod
+    def validate_decision(cls, value: str) -> str:
+        normalized = value.upper()
+        if normalized not in {"PASS", "REVIEW_REQUIRED", "FAIL"}:
+            raise ValueError("llm observation decision must be PASS/REVIEW_REQUIRED/FAIL")
+        return normalized
+
+
+class FusionObservation(BaseModel):
+    """Observed fusion metadata included in API output."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    final_decision: str
+    fused_confidence: float = Field(ge=0.0, le=1.0)
+    reason_codes: list[str] = Field(default_factory=list, max_length=20)
+    explanation: str = Field(min_length=1, max_length=5000)
+    remediation_hints: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("final_decision")
+    @classmethod
+    def validate_final_decision(cls, value: str) -> str:
+        normalized = value.upper()
+        if normalized not in {"PASS", "REVIEW_REQUIRED", "FAIL"}:
+            raise ValueError("fusion final_decision must be PASS/REVIEW_REQUIRED/FAIL")
+        return normalized
+
 
 class FeatureEvaluationResponse(BaseModel):
     """Per-feature evaluation result returned to CI."""
+
+    model_config = ConfigDict(extra="forbid")
 
     path: str
     feature_id: str | None = None
     decision: str | None = None
     risk_score: int | None = None
     deterministic_confidence: float | None = None
-    evidence_chunk_ids: list[str] = []
+    evidence_chunk_ids: list[str] = Field(default_factory=list)
     reasoning_summary: str | None = None
-    llm_observation: dict | None = None
-    fusion_observation: dict | None = None
+    llm_observation: LLMObservation | None = None
+    fusion_observation: FusionObservation | None = None
     error: str | None = None
-    validation_details: list[dict] = []
+    validation_details: list[dict] = Field(default_factory=list)
 
 
 class EvaluatePRResponse(BaseModel):
@@ -94,13 +168,23 @@ def health() -> dict[str, str]:
 
 
 @app.post("/v1/evaluate-pr", response_model=EvaluatePRResponse)
-def evaluate_pr(payload: EvaluatePRRequest) -> EvaluatePRResponse:
+def evaluate_pr(payload: EvaluatePRRequest, request: Request) -> EvaluatePRResponse:
     """
     Evaluate all changed feature specs in a PR.
 
     Partial failure is explicit by design: one invalid spec should not suppress
     evaluation of other changed specs.
     """
+    limiter = _get_rate_limiter()
+    if limiter is not None:
+        client_host = request.client.host if request.client is not None else "unknown"
+        rate_key = f"{client_host}:{payload.repo}"
+        if not limiter.allow(rate_key):
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded for evaluate-pr endpoint",
+            )
+
     results: list[FeatureEvaluationResponse] = []
     llm_enabled = os.environ.get("COMPLIANCE_LLM_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
     store = _get_store()

@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Iterable
 
 COMMENT_MARKER = "<!-- compliance-ci-comment -->"
+
+
+def _to_mapping(value: object | None) -> dict:
+    """Normalize optional dict-like or Pydantic-like objects to plain dict."""
+    if value is None:
+        return {}
+    if isinstance(value, Mapping):
+        return dict(value)
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(mode="python")
+        return dumped if isinstance(dumped, dict) else {}
+    return {}
 
 
 def determine_pr_gate(results: Iterable[object]) -> str:
@@ -75,8 +89,8 @@ def render_pr_comment(results: list[object], gate: str) -> str:
         decision = getattr(result, "decision", None)
         risk_score = getattr(result, "risk_score", None)
         evidence_chunk_ids = getattr(result, "evidence_chunk_ids", []) or []
-        fusion_observation = getattr(result, "fusion_observation", None) or {}
-        llm_observation = getattr(result, "llm_observation", None) or {}
+        fusion_observation = _to_mapping(getattr(result, "fusion_observation", None))
+        llm_observation = _to_mapping(getattr(result, "llm_observation", None))
         if error:
             lines.append(
                 f"- `{path}` -> `FAIL` (invalid spec): {error}"

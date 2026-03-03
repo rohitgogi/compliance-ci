@@ -72,6 +72,17 @@ def test_malformed_payload_returns_422() -> None:
     assert response.status_code == 422
 
 
+def test_invalid_repo_or_commit_sha_returns_422() -> None:
+    payload = {
+        "repo": "invalid repo format",
+        "pr_number": 44,
+        "commit_sha": "not-a-sha",
+        "specs": [{"path": "backend/features/payments/card_capture.yaml", "spec_yaml": VALID_SPEC}],
+    }
+    response = client.post("/v1/evaluate-pr", json=payload)
+    assert response.status_code == 422
+
+
 def test_partial_failure_does_not_hide_valid_feature_result() -> None:
     invalid_spec = """
 feature_name: Missing feature id
@@ -288,3 +299,42 @@ def test_api_persists_hybrid_evaluation_fields(tmp_path: Path, monkeypatch) -> N
     assert latest["llm_decision"] == "PASS"
     assert latest["deterministic_confidence"] is not None
     assert latest["fused_reason_codes"]
+
+
+def test_rate_limit_exceeded_returns_429(monkeypatch) -> None:
+    monkeypatch.setenv("COMPLIANCE_RATE_LIMIT_PER_MINUTE", "1")
+    from app.api import _get_rate_limiter
+
+    _get_rate_limiter.cache_clear()
+    payload = {
+        "repo": "acme/compliance-ci",
+        "pr_number": 52,
+        "commit_sha": "abcdef7654321",
+        "specs": [
+            {"path": "backend/features/payments/card_capture.yaml", "spec_yaml": VALID_SPEC},
+        ],
+    }
+    first = client.post("/v1/evaluate-pr", json=payload)
+    second = client.post("/v1/evaluate-pr", json=payload)
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert "Rate limit exceeded" in second.json()["detail"]
+
+
+def test_rate_limit_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("COMPLIANCE_RATE_LIMIT_PER_MINUTE", "0")
+    from app.api import _get_rate_limiter
+
+    _get_rate_limiter.cache_clear()
+    payload = {
+        "repo": "acme/compliance-ci",
+        "pr_number": 53,
+        "commit_sha": "abcdef7654321",
+        "specs": [
+            {"path": "backend/features/payments/card_capture.yaml", "spec_yaml": VALID_SPEC},
+        ],
+    }
+    first = client.post("/v1/evaluate-pr", json=payload)
+    second = client.post("/v1/evaluate-pr", json=payload)
+    assert first.status_code == 200
+    assert second.status_code == 200

@@ -48,6 +48,53 @@ class FeatureResultContract(BaseModel):
             raise ValueError("risk_score must be within 0-100")
         return value
 
+    @field_validator("llm_observation")
+    @classmethod
+    def validate_llm_observation(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return value
+        required = {"decision", "confidence", "fallback", "attempts"}
+        missing = required - set(value.keys())
+        if missing:
+            raise ValueError(f"llm_observation missing required keys: {sorted(missing)}")
+        decision = str(value["decision"]).upper()
+        if decision not in {"PASS", "REVIEW_REQUIRED", "FAIL"}:
+            raise ValueError("llm_observation decision invalid")
+        confidence = float(value["confidence"])
+        if confidence < 0.0 or confidence > 1.0:
+            raise ValueError("llm_observation confidence must be within 0-1")
+        attempts = int(value["attempts"])
+        if attempts < 1 or attempts > 10:
+            raise ValueError("llm_observation attempts must be 1-10")
+        value["decision"] = decision
+        value["confidence"] = confidence
+        value["attempts"] = attempts
+        value["fallback"] = bool(value["fallback"])
+        return value
+
+    @field_validator("fusion_observation")
+    @classmethod
+    def validate_fusion_observation(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return value
+        required = {"final_decision", "fused_confidence", "reason_codes", "explanation", "remediation_hints"}
+        missing = required - set(value.keys())
+        if missing:
+            raise ValueError(f"fusion_observation missing required keys: {sorted(missing)}")
+        final_decision = str(value["final_decision"]).upper()
+        if final_decision not in {"PASS", "REVIEW_REQUIRED", "FAIL"}:
+            raise ValueError("fusion_observation final_decision invalid")
+        fused_confidence = float(value["fused_confidence"])
+        if fused_confidence < 0.0 or fused_confidence > 1.0:
+            raise ValueError("fusion_observation fused_confidence must be within 0-1")
+        if not isinstance(value["reason_codes"], list):
+            raise ValueError("fusion_observation reason_codes must be a list")
+        if not isinstance(value["remediation_hints"], list):
+            raise ValueError("fusion_observation remediation_hints must be a list")
+        value["final_decision"] = final_decision
+        value["fused_confidence"] = fused_confidence
+        return value
+
 
 class EvaluationResponseContract(BaseModel):
     """Contract for backend response consumed by GitHub workflow."""
