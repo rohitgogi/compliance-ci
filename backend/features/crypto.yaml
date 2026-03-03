@@ -1,0 +1,12 @@
+feature_id: crypto-margin-trading
+feature_name: "Crypto Margin Trading"
+jurisdictions:
+  - CA
+
+controls:
+  leverage:
+    max_leverage: 10
+    user_type: retail
+  disclosures:
+    risk_warning: false
+  withdrawals_enabled: true
